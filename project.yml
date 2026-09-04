@@ -1,0 +1,85 @@
+name: ProviderLimits
+options:
+  bundleIdPrefix: com.andriyvl
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+
+settings:
+  SWIFT_VERSION: "6.0"
+  MARKETING_VERSION: "1.0"
+  CURRENT_PROJECT_VERSION: "1"
+  CODE_SIGN_STYLE: Automatic
+  ENABLE_DEBUG_DYLIB: NO
+  ENABLE_USER_SCRIPT_SANDBOXING: NO
+  GENERATE_INFOPLIST_FILE: YES
+  DEAD_CODE_STRIPPING: YES
+  CLANG_ENABLE_MODULE_VERIFIER: YES
+  ENABLE_MODULE_VERIFIER: YES
+  ENABLE_MODULE_VERIFIER_SUPPORTED_LANGUAGES: YES
+  ENABLE_MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS: YES
+  MODULE_VERIFIER_SUPPORTED_LANGUAGES: "objective-c objective-c++"
+  CLANG_MODULE_VERIFIER_SUPPORTED_LANGUAGES: "objective-c objective-c++"
+  CLANG_MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS: "gnu17 gnu++20"
+  ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: YES
+  ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+  STRING_CATALOG_COMPILER_GENERATE_SYMBOLS: YES
+  SWIFT_EMIT_LOC_STRINGS: YES
+targets:
+  ProviderLimitsCore:
+    type: framework
+    platform: macOS
+    sources:
+      - path: Sources/ProviderLimitsCore
+        excludes:
+          - "Resources/**"
+    resources:
+      - path: Sources/ProviderLimitsCore/Resources
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.andriyvl.ProviderLimitsCore
+      DEFINES_MODULE: YES
+      ENABLE_MODULE_VERIFIER_SUPPORTED_LANGUAGES: YES
+      ENABLE_MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS: YES
+  AI Limits:
+    type: application
+    platform: macOS
+    sources:
+      - path: App/MenuBarHostApp.swift
+      - path: App/MenuBarContentView.swift
+      - path: App/Resources
+        buildPhase: resources
+      - path: LICENSE
+        buildPhase: resources
+      - path: NOTICE
+        buildPhase: resources
+    dependencies:
+      - target: ProviderLimitsCore
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleIconFile: AppIcon
+        LSUIElement: true
+    entitlements:
+      path: App/ProviderLimits.entitlements
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.andriyvl.ai-provider-limits
+      GENERATE_INFOPLIST_FILE: NO
+
+  ProviderLimitsCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/ProviderLimitsCoreTests
+    dependencies:
+      - target: ProviderLimitsCore
+
+schemes:
+  AI Limits:
+    build:
+      targets:
+        AI Limits: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+

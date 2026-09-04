@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode & Swift
+.build/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+!default.sublime-project
+*.xcuserstate
+*.xcuserdatad
+dist/
+
+# dd-specs spec-sync guard
+.claude/.spec-sync-ack
+.claude/.spec-sync-state.json
+
+# Environment / Local Secrets
+.env
+.env.local
+*.key
+
+/Cursor.png
+/antigravity.png
+/codex.png
+/docs/references/*.png
+
+# Development & Internal Specs
+/docs/
+/CLAUDE.md
