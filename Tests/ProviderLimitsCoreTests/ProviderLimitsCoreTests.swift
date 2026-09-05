@@ -293,6 +293,105 @@ struct ProviderLimitsCoreTests {
         #expect(snapshot.metrics[1].remainingPercentage == 0.0)
     }
 
+    @Test("Cursor live parser parses Grok Bot weekly usage matching screenshot")
+    func testCursorLiveUsageParserWithGrokBot() throws {
+        let json: [String: Any] = [
+            "individualUsage": [
+                "plan": [
+                    "autoPercentUsed": 98.35,
+                    "apiPercentUsed": 100.0
+                ]
+            ]
+        ]
+
+        let sandJson: [String: Any] = [
+            "usagePercent": 6.0,
+            "nextResetTimestampUtc": "2026-09-10T10:44:57.000Z",
+            "hasNonZeroIncludedLimit": true
+        ]
+
+        let provider = CursorProvider()
+        let sandStatus = provider.parseSandUsageStatus(json: sandJson)
+        #expect(sandStatus != nil)
+        #expect(sandStatus?.usedPercentage == 6.0)
+
+        let creds = CursorCredentials(accessToken: "tok", userId: "usr", membershipType: "pro")
+        let snapshot = try provider.parseLiveUsageJSON(
+            json: json,
+            credentials: creds,
+            creditsRemaining: 0.0,
+            sandUsage: sandStatus
+        )
+
+        #expect(snapshot.provider == .cursor)
+        #expect(snapshot.metrics.count == 3)
+        let grokMetric = try #require(snapshot.metrics.first { $0.id == "grok_bot" })
+        #expect(grokMetric.label == "Grok Bot · Weekly")
+        #expect(grokMetric.modelClass == "Grok Bot")
+        #expect(grokMetric.usedPercentage == 6.0)
+        #expect(grokMetric.remainingPercentage == 94.0)
+        #expect(grokMetric.shortDialLabel == "Grok")
+        #expect(MetricRowView.shortWindowName(from: grokMetric.label) == "Weekly")
+        #expect(MetricRowView.formatModelLine(for: grokMetric) == "Grok Bot")
+    }
+
+    @Test("Cursor sand usage parser handles multiple formats and zero limit")
+    func testCursorSandUsageParserFormats() {
+        let provider = CursorProvider()
+
+        let snakeCase: [String: Any] = [
+            "usage_percent": 6.0,
+            "next_reset_timestamp_utc": "2026-09-10T10:44:57Z"
+        ]
+        let parsedSnake = provider.parseSandUsageStatus(json: snakeCase)
+        #expect(parsedSnake?.usedPercentage == 6.0)
+        #expect(parsedSnake?.resetsAt != nil)
+
+        let dictTimestamp: [String: Any] = [
+            "usagePercent": 12.5,
+            "nextResetTimestampUtc": [
+                "seconds": 1788960297,
+                "nanos": 0
+            ]
+        ]
+        let parsedDict = provider.parseSandUsageStatus(json: dictTimestamp)
+        #expect(parsedDict?.usedPercentage == 12.5)
+        #expect(parsedDict?.resetsAt != nil)
+
+        let disabled: [String: Any] = [
+            "includedLimitZero": true,
+            "usagePercent": 0.0
+        ]
+        #expect(provider.parseSandUsageStatus(json: disabled) == nil)
+    }
+
+    @Test("Cursor parser handles payload with Grok Bot")
+    func testCursorPayloadWithGrokBot() throws {
+        let json = """
+        {
+            "plan": "Included in Pro",
+            "on_demand_spend": 0.0,
+            "cursor_models": {
+                "used_percentage": 48.0,
+                "label": "Cursor Models · Monthly"
+            },
+            "grok_bot": {
+                "used_percentage": 6.0,
+                "label": "Grok Bot · Weekly",
+                "resets_at": "2026-09-10T10:44:57.000Z"
+            }
+        }
+        """
+
+        let provider = CursorProvider()
+        let snapshot = try provider.parseUsagePayload(data: Data(json.utf8))
+        #expect(snapshot.metrics.count == 2)
+        let grokMetric = try #require(snapshot.metrics.first { $0.id == "grok_bot" })
+        #expect(grokMetric.usedPercentage == 6.0)
+        #expect(grokMetric.remainingPercentage == 94.0)
+        #expect(grokMetric.resetsAt != nil)
+    }
+
     @Test("Cursor decodes base64url user IDs from JWT credentials")
     func testCursorJWTUserIdParser() {
         let payload = "eyJzdWIiOiJ1c2VyMTAwIiwieCI6IsO_In0"

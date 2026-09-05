@@ -82,6 +82,8 @@ public struct LimitMetric: Codable, Identifiable, Sendable {
         let lower = label.lowercased()
         if lower.contains("5-hour") || lower.contains("5 hour") || lower.contains("5h") {
             return "5-Hour"
+        } else if lower.contains("grok") {
+            return "Grok"
         } else if lower.contains("weekly") || lower.contains("7-day") || lower.contains("week") {
             return "Weekly"
         } else if lower.contains("claude") {

@@ -14,6 +14,22 @@ public struct CursorCredentials: Sendable {
         self.membershipType = membershipType
     }
 }
+public struct SandUsageStatus: Sendable, Equatable {
+    public let usedPercentage: Double
+    public let resetsAt: Date?
+    public let resetInDescription: String?
+
+    public init(
+        usedPercentage: Double,
+        resetsAt: Date? = nil,
+        resetInDescription: String? = nil
+    ) {
+        self.usedPercentage = usedPercentage
+        self.resetsAt = resetsAt
+        self.resetInDescription = resetInDescription
+    }
+}
+
 
 public struct CursorProvider: AIProviderClient, Sendable {
     public let providerType: ProviderType = .cursor
@@ -23,6 +39,7 @@ public struct CursorProvider: AIProviderClient, Sendable {
 
     private static let summaryBaseURL = "https://cursor.com/api/usage-summary"
     private static let creditGrantsURL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCreditGrantsBalance"
+    private static let sandUsageURL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus"
 
     public init(
         configURL: URL? = nil,
@@ -158,6 +175,7 @@ public struct CursorProvider: AIProviderClient, Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         async let creditsTask = fetchCreditGrantsBalance(token: credentials.accessToken)
+        async let sandUsageTask = fetchSandUsageStatus(token: credentials.accessToken)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ProviderClientError.invalidResponse(.cursor, "Missing HTTP response")
@@ -172,8 +190,14 @@ public struct CursorProvider: AIProviderClient, Sendable {
             throw ProviderClientError.invalidResponse(.cursor, "Invalid JSON")
         }
         let creditsRemaining = await creditsTask
+        let sandUsage = await sandUsageTask
 
-        return try parseLiveUsageJSON(json: json, credentials: credentials, creditsRemaining: creditsRemaining)
+        return try parseLiveUsageJSON(
+            json: json,
+            credentials: credentials,
+            creditsRemaining: creditsRemaining,
+            sandUsage: sandUsage
+        )
     }
 
     private func fetchCreditGrantsBalance(token: String) async -> Double? {
@@ -208,11 +232,111 @@ public struct CursorProvider: AIProviderClient, Sendable {
 
         return nil
     }
+    public func fetchSandUsageStatus(token: String) async -> SandUsageStatus? {
+        guard let url = URL(string: Self.sandUsageURL) else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = Data("{}".utf8)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        return parseSandUsageStatus(json: json)
+    }
+
+    public func parseSandUsageStatus(json: [String: Any]) -> SandUsageStatus? {
+        if json["includedLimitZero"] as? Bool == true || json["included_limit_zero"] as? Bool == true {
+            return nil
+        }
+
+        let used: Double?
+        if let num = json["usagePercent"] as? Double ?? json["usage_percent"] as? Double {
+            used = num
+        } else if let num = json["usagePercent"] as? Int ?? json["usage_percent"] as? Int {
+            used = Double(num)
+        } else if let str = json["usagePercent"] as? String ?? json["usage_percent"] as? String,
+                  let num = Double(str) {
+            used = num
+        } else if let num = json["used_percentage"] as? Double ?? json["usedPercentage"] as? Double {
+            used = num
+        } else if let num = json["percentUsed"] as? Double ?? json["percent_used"] as? Double {
+            used = num
+        } else {
+            used = nil
+        }
+
+        guard let used else { return nil }
+
+        let rawDate = json["nextResetTimestampUtc"]
+            ?? json["next_reset_timestamp_utc"]
+            ?? json["nextResetMs"]
+            ?? json["next_reset_ms"]
+            ?? json["resets_at"]
+            ?? json["resetsAt"]
+
+        let resetDate = parseTimestampValue(rawDate)
+        let resetDesc = json["resetInDescription"] as? String
+            ?? json["reset_in_description"] as? String
+            ?? parseBillingEndDescription(resetDate)
+
+        return SandUsageStatus(
+            usedPercentage: used,
+            resetsAt: resetDate,
+            resetInDescription: resetDesc
+        )
+    }
+
+    private func parseTimestampValue(_ value: Any?) -> Date? {
+        guard let value else { return nil }
+        if let string = value as? String {
+            if let date = parseBillingEndDate(string) {
+                return date
+            }
+            if let num = Double(string) {
+                let seconds = num > 10_000_000_000 ? num / 1000.0 : num
+                return Date(timeIntervalSince1970: seconds)
+            }
+        } else if let dict = value as? [String: Any] {
+            let secondsVal: Double?
+            if let sec = dict["seconds"] as? Double {
+                secondsVal = sec
+            } else if let sec = dict["seconds"] as? Int {
+                secondsVal = Double(sec)
+            } else if let sec = dict["seconds"] as? String, let num = Double(sec) {
+                secondsVal = num
+            } else {
+                secondsVal = nil
+            }
+            if let secondsVal {
+                let nanos = (dict["nanos"] as? Double)
+                    ?? (dict["nanos"] as? Int).map(Double.init)
+                    ?? 0.0
+                return Date(timeIntervalSince1970: secondsVal + nanos / 1_000_000_000.0)
+            }
+        } else if let num = value as? Double {
+            let seconds = num > 10_000_000_000 ? num / 1000.0 : num
+            return Date(timeIntervalSince1970: seconds)
+        } else if let num = value as? Int {
+            let numDouble = Double(num)
+            let seconds = numDouble > 10_000_000_000 ? numDouble / 1000.0 : numDouble
+            return Date(timeIntervalSince1970: seconds)
+        }
+        return nil
+    }
+
 
     public func parseLiveUsageJSON(
         json: [String: Any],
         credentials: CursorCredentials,
-        creditsRemaining: Double? = nil
+        creditsRemaining: Double? = nil,
+        sandUsage: SandUsageStatus? = nil
     ) throws -> ProviderUsageSnapshot {
         let plan = credentials.membershipType?.capitalized ?? "Pro"
         let planName = "Included in \(plan)"
@@ -249,6 +373,36 @@ public struct CursorProvider: AIProviderClient, Sendable {
                 status: LimitStatus.evaluate(remainingPercentage: remain)
             ))
         }
+        let resolvedSandUsage: SandUsageStatus?
+        if let sandUsage {
+            resolvedSandUsage = sandUsage
+        } else if let nested = json["grok_bot"] as? [String: Any]
+            ?? json["grok"] as? [String: Any]
+            ?? json["sand_usage"] as? [String: Any]
+            ?? json["sandUsage"] as? [String: Any] {
+            resolvedSandUsage = parseSandUsageStatus(json: nested)
+        } else if json["usagePercent"] != nil || json["usage_percent"] != nil {
+            resolvedSandUsage = parseSandUsageStatus(json: json)
+        } else {
+            resolvedSandUsage = nil
+        }
+
+        if let resolvedSandUsage {
+            let used = resolvedSandUsage.usedPercentage
+            let remain = max(0.0, min(100.0, 100.0 - used))
+            let resetsAt = resolvedSandUsage.resetsAt
+            let resetInDesc = resolvedSandUsage.resetInDescription ?? parseBillingEndDescription(resetsAt)
+            metrics.append(LimitMetric(
+                id: "grok_bot",
+                label: "Grok Bot · Weekly",
+                usedPercentage: used,
+                remainingPercentage: remain,
+                resetsAt: resetsAt,
+                resetInDescription: resetInDesc,
+                status: LimitStatus.evaluate(remainingPercentage: remain)
+            ))
+        }
+
 
         let parsedCredits = creditsRemaining ?? (json["credits_remaining"] as? Double) ?? (json["credits"] as? Double)
 
@@ -317,6 +471,24 @@ public struct CursorProvider: AIProviderClient, Sendable {
                 remainingPercentage: max(0.0, 100.0 - used)
             ))
         }
+        if let grokBot = json["grok_bot"] as? [String: Any] ?? json["grok"] as? [String: Any],
+           let used = grokBot["used_percentage"] as? Double
+            ?? grokBot["usedPercentage"] as? Double
+            ?? (grokBot["usagePercent"] as? Double)
+            ?? (grokBot["usage_percent"] as? Double) {
+            let resetsAt = parseBillingEndDate(grokBot["resets_at"] as? String ?? grokBot["resetsAt"] as? String)
+            metrics.append(LimitMetric(
+                id: "grok_bot",
+                label: grokBot["label"] as? String ?? "Grok Bot · Weekly",
+                usedPercentage: used,
+                remainingPercentage: max(0.0, 100.0 - used),
+                resetsAt: resetsAt,
+                resetInDescription: grokBot["reset_in_description"] as? String
+                    ?? grokBot["resetInDescription"] as? String
+                    ?? parseBillingEndDescription(resetsAt)
+            ))
+        }
+
 
         return ProviderUsageSnapshot(
             provider: .cursor,
