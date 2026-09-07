@@ -34,14 +34,27 @@ struct MenuBarHostApp: App {
     }
 
     private static let menuBarIcon: Image = {
-        guard let iconURL = Bundle.main.url(forResource: "MenuBarIcon@2x", withExtension: "png"),
-              let icon = NSImage(contentsOf: iconURL) else {
-            return Image(systemName: "circle")
+        if let icon = Bundle.main.image(forResource: "MenuBarIcon") {
+            icon.size = NSSize(width: 18, height: 18)
+            icon.isTemplate = true
+            return Image(nsImage: icon)
         }
 
-        icon.size = NSSize(width: 18, height: 18)
-        icon.isTemplate = true
-        return Image(nsImage: icon)
+        let candidates = [
+            Bundle.main.url(forResource: "MenuBarIcon", withExtension: "tiff"),
+            Bundle.main.url(forResource: "MenuBarIcon@2x", withExtension: "png"),
+            Bundle.main.url(forResource: "MenuBarIcon", withExtension: "png")
+        ]
+
+        for case let url? in candidates {
+            if let icon = NSImage(contentsOf: url) {
+                icon.size = NSSize(width: 18, height: 18)
+                icon.isTemplate = true
+                return Image(nsImage: icon)
+            }
+        }
+
+        return Image(systemName: "circle")
     }()
 
     private func refreshAll() async {

@@ -41,7 +41,12 @@ public struct ClaudeProvider: AIProviderClient, Sendable {
         if let data = try? Data(contentsOf: credentialsURL) {
             return try parseCredentialsOrUsage(data: data)
         }
-        return ProviderUsageSnapshot.empty(for: .claude)
+        return ProviderUsageSnapshot(
+            provider: .claude,
+            planName: "Claude",
+            metrics: [],
+            isActive: false
+        )
     }
 
     public func resolveCredentials() -> ClaudeCredentials? {

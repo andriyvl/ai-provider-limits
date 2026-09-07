@@ -33,8 +33,8 @@ targets:
       - path: Sources/ProviderLimitsCore
         excludes:
           - "Resources/**"
-    resources:
       - path: Sources/ProviderLimitsCore/Resources
+        buildPhase: resources
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.andriyvl.ProviderLimitsCore
       DEFINES_MODULE: YES

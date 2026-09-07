@@ -40,15 +40,27 @@ public struct ProviderLogoView: View {
     }
 
     private static func imageURL(named name: String) -> URL? {
-        let bundle = Bundle.providerLimits
-        if let url = bundle.url(forResource: name, withExtension: "png") {
-            return url
+        let candidateBundles: [Bundle] = [
+            Bundle.providerLimits,
+            Bundle.main,
+            Bundle(for: AppGroupStore.self),
+            Bundle.main.url(forResource: "ProviderLimitsCore_ProviderLimitsCore", withExtension: "bundle").flatMap { Bundle(url: $0) },
+            Bundle(for: AppGroupStore.self).url(forResource: "ProviderLimitsCore_ProviderLimitsCore", withExtension: "bundle").flatMap { Bundle(url: $0) }
+        ].compactMap { $0 }
+
+        for bundle in candidateBundles {
+            if let url = bundle.url(forResource: name, withExtension: "png") {
+                return url
+            }
+            if let url = bundle.url(
+                forResource: name,
+                withExtension: "png",
+                subdirectory: "Media.xcassets/\(name).imageset"
+            ) {
+                return url
+            }
         }
-        return bundle.url(
-            forResource: name,
-            withExtension: "png",
-            subdirectory: "Media.xcassets/\(name).imageset"
-        )
+        return nil
     }
 }
 
