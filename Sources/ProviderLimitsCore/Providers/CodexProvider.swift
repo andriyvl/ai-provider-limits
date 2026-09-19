@@ -32,43 +32,107 @@ public struct CodexProvider: AIProviderClient, Sendable {
     }
 
     public func fetchUsage() async throws -> ProviderUsageSnapshot {
-        if let credentials = resolveCredentials() {
+        let candidates = resolveAllCandidateCredentials()
+        var lastError: Error?
+
+        for credentials in candidates {
             do {
                 return try await fetchLiveUsage(credentials: credentials)
             } catch let error as ProviderClientError {
                 if case .rateLimited = error { throw error }
+                lastError = error
+            } catch {
+                lastError = error
             }
         }
 
         let authURL = resolveAuthURL()
         if FileManager.default.fileExists(atPath: authURL.path),
            let authData = try? Data(contentsOf: authURL),
-           let snapshot = try? parseLocalAuth(data: authData) {
+           let snapshot = try? parseLocalAuth(data: authData),
+           !snapshot.metrics.isEmpty {
             return snapshot
         }
 
-        return ProviderUsageSnapshot.empty(for: .codex)
+        if let lastError {
+            throw lastError
+        }
+
+        if candidates.isEmpty {
+            throw ProviderClientError.missingCredentials(.codex)
+        }
+
+        return ProviderUsageSnapshot(
+            provider: .codex,
+            planName: "ChatGPT",
+            metrics: [],
+            isActive: false
+        )
     }
 
     public func resolveCredentials() -> CodexCredentials? {
+        resolveAllCandidateCredentials().first
+    }
+
+    public func resolveAllCandidateCredentials() -> [CodexCredentials] {
+        var candidates: [CodexCredentials] = []
+
         if let customToken {
-            return CodexCredentials(accessToken: customToken, accountId: customAccountId)
+            candidates.append(CodexCredentials(accessToken: customToken, accountId: customAccountId))
         }
 
         let authURL = resolveAuthURL()
         if let data = try? Data(contentsOf: authURL),
            let credentials = parseCredentials(data: data) {
-            return credentials
+            candidates.append(credentials)
         }
 
         #if os(macOS) && canImport(SQLite3)
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dbURL = home.appendingPathComponent(".omp/agent/agent.db")
         if FileManager.default.fileExists(atPath: dbURL.path) {
-            return readCredentialsFromSQLite(dbPath: dbURL.path)
+            candidates.append(contentsOf: readCredentialsFromSQLite(dbPath: dbURL.path))
         }
         #endif
 
+        return prioritizeCredentials(candidates)
+    }
+
+    private func prioritizeCredentials(_ candidates: [CodexCredentials]) -> [CodexCredentials] {
+        var seenTokens = Set<String>()
+        var unique: [CodexCredentials] = []
+        for cred in candidates {
+            if seenTokens.insert(cred.accessToken).inserted {
+                unique.append(cred)
+            }
+        }
+
+        return unique.sorted { lhs, rhs in
+            let leftExp = tokenExpiration(lhs.accessToken) ?? 0
+            let rightExp = tokenExpiration(rhs.accessToken) ?? 0
+            return leftExp > rightExp
+        }
+    }
+
+    private func tokenExpiration(_ token: String) -> TimeInterval? {
+        let parts = token.split(separator: ".")
+        guard parts.count >= 2 else { return nil }
+        var base64 = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 {
+            base64.append("=")
+        }
+        guard let data = Data(base64Encoded: base64),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let exp = json["exp"] as? Double {
+            return exp
+        }
+        if let exp = json["exp"] as? Int {
+            return Double(exp)
+        }
         return nil
     }
 
@@ -91,28 +155,33 @@ public struct CodexProvider: AIProviderClient, Sendable {
     }
 
     #if os(macOS) && canImport(SQLite3)
-    private func readCredentialsFromSQLite(dbPath: String) -> CodexCredentials? {
+    private func readCredentialsFromSQLite(dbPath: String) -> [CodexCredentials] {
         var dbPointer: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &dbPointer, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return nil }
+        guard sqlite3_open_v2(dbPath, &dbPointer, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_close(dbPointer) }
 
         let query = """
         SELECT data FROM auth_credentials
         WHERE provider = 'openai-codex' AND disabled_cause IS NULL
-        ORDER BY id DESC LIMIT 1
+        ORDER BY id DESC
         """
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(dbPointer, query, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        guard sqlite3_prepare_v2(dbPointer, query, -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
 
-        guard sqlite3_step(stmt) == SQLITE_ROW, let cString = sqlite3_column_text(stmt, 0) else { return nil }
-        guard let data = String(cString: cString).data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-
-        guard let token = json["access"] as? String, !token.isEmpty else { return nil }
-        let accountId = json["accountId"] as? String
-            ?? (json["account"] as? [String: Any])?["id"] as? String
-        return CodexCredentials(accessToken: token, accountId: accountId)
+        var results: [CodexCredentials] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let cString = sqlite3_column_text(stmt, 0),
+                  let data = String(cString: cString).data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let token = json["access"] as? String, !token.isEmpty else {
+                continue
+            }
+            let accountId = json["accountId"] as? String
+                ?? (json["account"] as? [String: Any])?["id"] as? String
+            results.append(CodexCredentials(accessToken: token, accountId: accountId))
+        }
+        return results
     }
     #endif
 
@@ -148,25 +217,22 @@ public struct CodexProvider: AIProviderClient, Sendable {
         let planName: String
         if planRaw.localizedCaseInsensitiveContains("plus") {
             planName = "ChatGPT Plus / Codex"
+        } else if planRaw.localizedCaseInsensitiveContains("pro") {
+            planName = "ChatGPT Pro / Codex"
+        } else if planRaw.localizedCaseInsensitiveContains("team") {
+            planName = "ChatGPT Team / Codex"
+        } else if planRaw.localizedCaseInsensitiveContains("enterprise") {
+            planName = "ChatGPT Enterprise / Codex"
         } else {
             planName = "ChatGPT \(planRaw.capitalized)"
         }
 
         var metrics: [LimitMetric] = []
+        var seenIds = Set<String>()
+
         let rateLimit = json["rate_limit"] as? [String: Any] ?? json["rate_limits"] as? [String: Any]
         if let rateLimit {
-            let windowKeys = [
-                "primary_window", "secondary_window",
-                "five_hour", "weekly",
-                "primary", "secondary"
-            ]
-            var seenIds = Set<String>()
-            for key in windowKeys {
-                guard let window = rateLimit[key] as? [String: Any],
-                      let metric = parseRateLimitWindow(window, key: key),
-                      seenIds.insert(metric.id).inserted else { continue }
-                metrics.append(metric)
-            }
+            parseRateLimitWindows(rateLimit, into: &metrics, seenIds: &seenIds)
         }
 
         if metrics.isEmpty, let weekly = json["weekly_limit"] as? [String: Any] {
@@ -195,7 +261,28 @@ public struct CodexProvider: AIProviderClient, Sendable {
         )
     }
 
-    private func parseRateLimitWindow(_ window: [String: Any], key: String) -> LimitMetric? {
+    private func parseRateLimitWindows(
+        _ rateLimit: [String: Any],
+        into metrics: inout [LimitMetric],
+        seenIds: inout Set<String>
+    ) {
+        let windowKeys = [
+            "primary_window", "secondary_window",
+            "five_hour", "weekly",
+            "primary", "secondary"
+        ]
+        for key in windowKeys {
+            guard let window = rateLimit[key] as? [String: Any],
+                  let metric = parseRateLimitWindow(window, key: key),
+                  seenIds.insert(metric.id).inserted else { continue }
+            metrics.append(metric)
+        }
+    }
+
+    private func parseRateLimitWindow(
+        _ window: [String: Any],
+        key: String
+    ) -> LimitMetric? {
         let usedPct: Double
         if let used = numericValue(window["used_percent"] ?? window["usedPercent"]) {
             usedPct = used
@@ -223,20 +310,23 @@ public struct CodexProvider: AIProviderClient, Sendable {
         )
     }
 
-    private func classifyRateLimitWindow(key: String, windowSeconds: Double?) -> (id: String, label: String) {
+    private func classifyRateLimitWindow(
+        key: String,
+        windowSeconds: Double?
+    ) -> (id: String, label: String) {
+        let isFiveHour: Bool
         if let windowSeconds {
-            if windowSeconds <= 12 * 3600 {
-                return ("codex_5hour", "GPT Models · 5-Hour Limit")
-            }
-            if windowSeconds >= 24 * 3600 {
-                return ("codex_weekly", "GPT Models · Weekly Limit")
-            }
+            isFiveHour = windowSeconds <= 12 * 3600
+        } else {
+            let lower = key.lowercased()
+            isFiveHour = !(lower.contains("week") || lower.contains("secondary"))
         }
-        let lower = key.lowercased()
-        if lower.contains("week") || lower.contains("secondary") {
+
+        if isFiveHour {
+            return ("codex_5hour", "GPT Models · 5-Hour Limit")
+        } else {
             return ("codex_weekly", "GPT Models · Weekly Limit")
         }
-        return ("codex_5hour", "GPT Models · 5-Hour Limit")
     }
 
     private func parseWindowResetDate(_ window: [String: Any]) -> Date? {

@@ -177,6 +177,48 @@ struct ProviderLimitsCoreTests {
         #expect(snapshot.metrics[0].remainingPercentage == 1.0)
     }
 
+    @Test("Codex parser handles Prolite plan and ignores unlisted additional metered limits")
+    func testCodexProlitePlan() throws {
+        let json: [String: Any] = [
+            "plan_type": "prolite",
+            "rate_limit": [
+                "primary_window": [
+                    "used_percent": 16,
+                    "limit_window_seconds": 604_800,
+                    "reset_after_seconds": 325_837,
+                    "reset_at": 1_789_896_037
+                ],
+                "secondary_window": NSNull()
+            ],
+            "additional_rate_limits": [
+                [
+                    "limit_name": "GPT-5.3-Codex-Spark",
+                    "rate_limit": [
+                        "primary_window": [
+                            "used_percent": 0,
+                            "limit_window_seconds": 18_000,
+                            "reset_after_seconds": 18_000,
+                            "reset_at": 1_789_588_201
+                        ]
+                    ]
+                ]
+            ],
+            "credits": [
+                "balance": "0"
+            ]
+        ]
+
+        let provider = CodexProvider()
+        let snapshot = try provider.parseUsagePayload(json: json)
+
+        #expect(snapshot.provider == .codex)
+        #expect(snapshot.planName == "ChatGPT Pro / Codex")
+        #expect(snapshot.metrics.count == 1)
+        #expect(snapshot.metrics[0].id == "codex_weekly")
+        #expect(snapshot.metrics[0].label == "GPT Models · Weekly Limit")
+        #expect(snapshot.metrics[0].remainingPercentage == 84.0)
+    }
+
     @Test("Claude parser calculates 5h and 7d metrics")
     func testClaudeParser() throws {
         let json: [String: Any] = [
@@ -595,5 +637,16 @@ struct ProviderLimitsCoreTests {
 
         let persisted = store.loadSnapshot(for: .antigravity)
         #expect(persisted?.metrics.count == 1)
+    }
+
+    @Test("ProviderHeaderView formats plan names cleanly for header display")
+    func testProviderHeaderViewFormatPlanName() {
+        #expect(ProviderHeaderView.formatPlanName("ChatGPT Pro / Codex", for: .codex) == "ChatGPT Pro")
+        #expect(ProviderHeaderView.formatPlanName("ChatGPT Plus / Codex", for: .codex) == "ChatGPT Plus")
+        #expect(ProviderHeaderView.formatPlanName("Google AI Pro", for: .antigravity) == "Google AI Pro")
+        #expect(ProviderHeaderView.formatPlanName("Included in Pro", for: .cursor) == "Pro")
+        #expect(ProviderHeaderView.formatPlanName("Claude Pro", for: .claude) == "Claude Pro")
+        #expect(ProviderHeaderView.formatPlanName("Cursor", for: .cursor) == nil)
+        #expect(ProviderHeaderView.formatPlanName("", for: .codex) == nil)
     }
 }

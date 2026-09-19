@@ -25,11 +25,18 @@ public struct ProviderHeaderView: View {
         HStack(alignment: .center, spacing: 8) {
             ProviderLogoView(provider: provider, size: 19)
 
-            Text(provider.displayName)
-                .font(.system(size: 13.5, weight: .semibold))
-                .foregroundStyle(LiquidGlassTheme.textPrimary)
-                .lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(provider.displayName)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(LiquidGlassTheme.textPrimary)
 
+                if let displayPlan = formattedPlanName {
+                    Text("(\(displayPlan))")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(LiquidGlassTheme.textSecondary)
+                }
+            }
+            .lineLimit(1)
             Spacer()
 
             if isActive {
@@ -44,6 +51,23 @@ public struct ProviderHeaderView: View {
                     )
             }
         }
+    }
+
+    public var formattedPlanName: String? {
+        Self.formatPlanName(planName, for: provider)
+    }
+
+    nonisolated public static func formatPlanName(_ planName: String, for provider: ProviderType) -> String? {
+        guard !planName.isEmpty else { return nil }
+        let cleaned = planName
+            .replacingOccurrences(of: " / Codex", with: "")
+            .replacingOccurrences(of: "Included in ", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if cleaned.isEmpty || cleaned.caseInsensitiveCompare(provider.displayName) == .orderedSame {
+            return nil
+        }
+        return cleaned
     }
 
     private func shortDate(for date: Date) -> String {
