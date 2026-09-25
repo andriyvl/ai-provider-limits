@@ -11,7 +11,8 @@ public actor SyncEngine {
             .antigravity: AntigravityProvider(),
             .codex: CodexProvider(),
             .claude: ClaudeProvider(),
-            .cursor: CursorProvider()
+            .cursor: CursorProvider(),
+            .openRouter: OpenRouterProvider()
         ]
     }
 

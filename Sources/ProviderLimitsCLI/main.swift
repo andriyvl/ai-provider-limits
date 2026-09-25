@@ -50,6 +50,11 @@ struct ProviderLimitsCLI {
                 let creditPadding = max(1, 73 - creditLine.count)
                 print("\(creditLine)\(String(repeating: " ", count: creditPadding))│")
             }
+            if let dailySpend = snapshot.dailySpend {
+                let dailyLine = String(format: "│  Today's Usage (UTC): $%.2f", dailySpend)
+                let dailyPadding = max(1, 73 - dailyLine.count)
+                print("\(dailyLine)\(String(repeating: " ", count: dailyPadding))│")
+            }
             if let spend = snapshot.onDemandSpend, spend > 0 {
                 let spendLine = String(format: "│  On-Demand Spend: $%.2f", spend)
                 let spendPadding = max(1, 73 - spendLine.count)

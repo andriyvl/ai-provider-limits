@@ -13,6 +13,7 @@ public struct MenuBarContentView: View {
     @AppStorage("showCodex") private var showCodex = true
     @AppStorage("showCursor") private var showCursor = true
     @AppStorage("showClaude") private var showClaude = false
+    @AppStorage("showOpenRouter") private var showOpenRouter = false
     @State private var providerOrder: [ProviderType] = AppGroupStore.shared.loadProviderOrder()
     @State private var isAttributionHovered = false
     public init(
@@ -42,6 +43,7 @@ public struct MenuBarContentView: View {
         .preferredColorScheme(.dark)
         .background(MenuBarWindowChrome())
     }
+
 
     private var mainCardList: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -104,6 +106,7 @@ public struct MenuBarContentView: View {
                     providerSettingsRow(provider: provider, index: index, totalCount: providerOrder.count)
                 }
             }
+
 
             HStack(spacing: 4) {
                 Spacer()
@@ -203,13 +206,13 @@ public struct MenuBarContentView: View {
             .disabled(!canMoveDown)
         }
     }
-
     private func isProviderEnabled(_ provider: ProviderType) -> Bool {
         switch provider {
         case .antigravity: return showAntigravity
         case .codex: return showCodex
         case .cursor: return showCursor
         case .claude: return showClaude
+        case .openRouter: return showOpenRouter
         }
     }
 
@@ -219,8 +222,10 @@ public struct MenuBarContentView: View {
         case .codex: return $showCodex
         case .cursor: return $showCursor
         case .claude: return $showClaude
+        case .openRouter: return $showOpenRouter
         }
     }
+
 
     private func moveProvider(_ provider: ProviderType, moveUp: Bool) {
         var list = providerOrder
@@ -231,18 +236,16 @@ public struct MenuBarContentView: View {
         providerOrder = list
         AppGroupStore.shared.saveProviderOrder(list)
     }
-
     private var visibleSnapshots: [ProviderUsageSnapshot] {
-        var list: [ProviderUsageSnapshot] = []
-        for provider in providerOrder {
-            guard isProviderEnabled(provider) else { continue }
-            let snap = snapshots[provider] ?? ProviderUsageSnapshot.empty(for: provider)
-            if snap.isActive {
-                list.append(snap)
-            }
+        providerOrder.compactMap { provider in
+            guard isProviderEnabled(provider) else { return nil }
+            let snapshot = snapshots[provider] ?? ProviderUsageSnapshot.empty(for: provider)
+            return snapshot.isActive ? snapshot : nil
         }
-        return list
     }
+
+
+
 
     private var headerBar: some View {
         HStack(spacing: 8) {

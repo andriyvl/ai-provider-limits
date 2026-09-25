@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SQLite3
 @testable import ProviderLimitsCore
 
 @Suite("Provider Limits Core Tests")
@@ -448,6 +449,20 @@ struct ProviderLimitsCoreTests {
         #expect(ProviderType.codex.logoAssetName == "chatgpt")
         #expect(ProviderType.claude.logoAssetName == "claude")
         #expect(ProviderType.cursor.logoAssetName == "cursor")
+        #expect(ProviderType.openRouter.logoAssetName == "openrouter")
+    }
+
+    @Test("Provider usage links open provider limit pages")
+    func testProviderUsageDetailsURLs() {
+        #expect(ProviderType.claude.usageDetailsURL?.absoluteString == "https://claude.ai/settings/usage")
+        #expect(ProviderType.cursor.usageDetailsURL?.absoluteString == "https://cursor.com/dashboard/spending")
+        #expect(ProviderType.codex.usageDetailsURL?.absoluteString == "https://chatgpt.com/codex/settings/usage")
+        #expect(ProviderType.openRouter.usageDetailsURL?.absoluteString == "https://openrouter.ai/activity")
+        #expect(ProviderType.antigravity.usageDetailsURL == nil)
+        #expect(
+            ProviderType.antigravity.usageDetailsTooltip
+                == "Usage limits are only accessible in the Antigravity desktop app."
+        )
     }
 
     @Test("AppGroupStore saves and loads snapshots")
@@ -603,7 +618,7 @@ struct ProviderLimitsCoreTests {
         #expect(defaultOrder.contains(.antigravity))
         #expect(defaultOrder.contains(.codex))
 
-        let customOrder: [ProviderType] = [.cursor, .claude, .codex, .antigravity]
+        let customOrder: [ProviderType] = [.cursor, .claude, .codex, .antigravity, .openRouter]
         store.saveProviderOrder(customOrder)
 
         let loadedOrder = store.loadProviderOrder()
@@ -649,4 +664,192 @@ struct ProviderLimitsCoreTests {
         #expect(ProviderHeaderView.formatPlanName("Cursor", for: .cursor) == nil)
         #expect(ProviderHeaderView.formatPlanName("", for: .codex) == nil)
     }
+
+    @Test("OpenRouter parses account credit totals")
+    func testOpenRouterCreditParsing() throws {
+        let credits = try OpenRouterProvider.parseCredits(data: Data("""
+        {"data":{"total_credits":100.0,"total_usage":23.5}}
+        """.utf8))
+        #expect(credits.totalCredits == 100)
+        #expect(credits.totalUsage == 23.5)
+        #expect(throws: ProviderClientError.self) {
+            try OpenRouterProvider.parseCredits(data: Data("""
+            {"data":{"total_credits":100}}
+            """.utf8))
+        }
+    }
+
+    @Test("OpenRouter prefers its process environment key over OMP")
+    func testOpenRouterCredentialPrecedence() {
+        #expect(
+            OpenRouterProvider.resolveAPIKey(
+                environment: ["OPENROUTER_API_KEY": "environment-key"],
+                ompKey: "omp-key"
+            ) == "environment-key"
+        )
+        #expect(
+            OpenRouterProvider.resolveAPIKey(
+                environment: [:],
+                ompKey: " omp-key "
+            ) == "omp-key"
+        )
+        #expect(OpenRouterProvider.resolveAPIKey(environment: [:], ompKey: nil) == nil)
+    }
+
+    @Test("OpenRouter loads latest active OMP credential")
+    func testOpenRouterLoadsLatestActiveOMPKey() {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        var database: OpaquePointer?
+        let openStatus = sqlite3_open(databaseURL.path, &database)
+        guard openStatus == SQLITE_OK, let database else {
+            Issue.record("Could not create temporary OMP credential database.")
+            return
+        }
+        defer { sqlite3_close(database) }
+
+        let sql = """
+        CREATE TABLE auth_credentials (
+            id INTEGER PRIMARY KEY,
+            provider TEXT NOT NULL,
+            disabled_cause TEXT,
+            data TEXT NOT NULL
+        );
+        INSERT INTO auth_credentials VALUES
+            (1, 'openrouter', NULL, '{"key":"older-key"}'),
+            (2, 'openrouter', 'disabled', '{"key":"disabled-key"}'),
+            (3, 'cursor', NULL, '{"key":"wrong-provider-key"}'),
+            (4, 'openrouter', NULL, '{"key":"latest-active-key"}');
+        """
+        #expect(sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK)
+        #expect(OpenRouterProvider.loadOMPAPIKey(from: databaseURL) == "latest-active-key")
+    }
+
+    @Test("OpenRouter keeps balance when key stats are unavailable")
+    func testOpenRouterAccountBalance() async throws {
+        let host = "openrouter-balance.test"
+        OpenRouterURLProtocol.setResponses([
+            "/api/v1/credits": (200, Data("""
+            {"data":{"total_credits":100.0,"total_usage":23.5}}
+            """.utf8))
+        ], for: host)
+        defer { OpenRouterURLProtocol.clearResponses(for: host) }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OpenRouterURLProtocol.self]
+        let provider = OpenRouterProvider(
+            session: URLSession(configuration: configuration),
+            environment: ["OPENROUTER_API_KEY": "test-key"],
+            creditsEndpoint: URL(string: "https://\(host)/api/v1/credits")!,
+            agentDatabaseURL: nil
+        )
+        let snapshot = try await provider.fetchUsage()
+
+        #expect(snapshot.isActive)
+        #expect(snapshot.creditsRemaining == 76.5)
+        #expect(snapshot.dailySpend == nil)
+        #expect(snapshot.onDemandSpend == nil)
+        #expect(snapshot.metrics.first?.rawLimit == 100)
+        #expect(snapshot.metrics.first?.rawUsed == 23.5)
+    }
+
+    @Test("OpenRouter reports the current API-key spend limit and UTC daily usage")
+    func testOpenRouterKeyLimitAndDailyUsage() async throws {
+        let host = "openrouter-metrics.test"
+        OpenRouterURLProtocol.setResponses([
+            "/api/v1/credits": (200, Data("""
+            {"data":{"total_credits":100.0,"total_usage":23.5}}
+            """.utf8)),
+            "/api/v1/key": (200, Data("""
+            {"data":{"limit":10.0,"limit_reset":"monthly","limit_remaining":4.0,"usage_daily":0.75}}
+            """.utf8))
+        ], for: host)
+        defer { OpenRouterURLProtocol.clearResponses(for: host) }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OpenRouterURLProtocol.self]
+        let provider = OpenRouterProvider(
+            session: URLSession(configuration: configuration),
+            environment: ["OPENROUTER_API_KEY": "test-key"],
+            creditsEndpoint: URL(string: "https://\(host)/api/v1/credits")!,
+            agentDatabaseURL: nil
+        )
+        let snapshot = try await provider.fetchUsage()
+
+        #expect(snapshot.creditsRemaining == 76.5)
+        #expect(snapshot.dailySpend == 0.75)
+        #expect(snapshot.onDemandSpend == nil)
+        let keyLimit = try #require(snapshot.metrics.first { $0.id == "openrouter_key_limit" })
+        #expect(keyLimit.rawLimit == 10)
+        #expect(keyLimit.rawUsed == 6)
+        #expect(keyLimit.sublabel?.contains("used of") == true)
+        #expect(abs(keyLimit.remainingPercentage - 40) < 0.001)
+    }
+
+
+    @Test("OpenRouter without a credential is inactive")
+    func testOpenRouterMissingCredentialReturnsInactiveSnapshot() async throws {
+        let snapshot = try await OpenRouterProvider(
+            environment: [:],
+            agentDatabaseURL: nil
+        ).fetchUsage()
+        #expect(!snapshot.isActive)
+        #expect(snapshot.metrics.isEmpty)
+        #expect(snapshot.creditsRemaining == nil)
+    }
+
+}
+
+private final class OpenRouterURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) private static var responses: [String: (Int, Data)] = [:]
+    private static let responseLock = NSLock()
+
+    static func setResponses(_ responses: [String: (Int, Data)], for host: String) {
+        responseLock.lock()
+        defer { responseLock.unlock() }
+        for (path, response) in responses {
+            Self.responses["\(host)\(path)"] = response
+        }
+    }
+
+    static func clearResponses(for host: String) {
+        responseLock.lock()
+        defer { responseLock.unlock() }
+        Self.responses = Self.responses.filter { !$0.key.hasPrefix(host) }
+    }
+
+    private static func response(for url: URL?) -> (Int, Data)? {
+        guard let url else { return nil }
+        responseLock.lock()
+        defer { responseLock.unlock() }
+        return Self.responses["\(url.host ?? "")\(url.path)"]
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let response = Self.response(for: request.url) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
+            return
+        }
+        let httpResponse = HTTPURLResponse(
+            url: request.url!,
+            statusCode: response.0,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: httpResponse, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: response.1)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

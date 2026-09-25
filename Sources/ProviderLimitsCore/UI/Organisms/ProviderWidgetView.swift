@@ -31,7 +31,17 @@ public struct ProviderWidgetView: View {
                 subscriptionDaysRemaining: snapshot.subscriptionDaysRemaining()
             )
 
-            if visibleMetrics.isEmpty {
+            if snapshot.provider == .openRouter {
+                VStack(alignment: .leading, spacing: metricSpacing) {
+                    openRouterBalanceRow
+                    if let openRouterKeyLimit {
+                        MetricRowView(metric: openRouterKeyLimit, rowFill: rowFill)
+                    }
+                    ForEach(footerItems, id: \.title) { item in
+                        footerRow(item)
+                    }
+                }
+            } else if visibleMetrics.isEmpty {
                 HStack {
                     Text("Connecting...")
                         .font(.system(size: 11, weight: .medium))
@@ -110,19 +120,56 @@ public struct ProviderWidgetView: View {
 
     private var footerItems: [FooterItem] {
         var items: [FooterItem] = []
-        if let credits = snapshot.creditsRemaining {
+        if let credits = snapshot.creditsRemaining, snapshot.provider != .openRouter {
             let value = snapshot.provider == .cursor
                 ? String(format: "$%.2f remaining", credits)
                 : "\(Int(credits))"
             items.append(FooterItem(title: "Credits", value: value))
         }
+        if let dailySpend = snapshot.dailySpend {
+            items.append(
+                FooterItem(title: "Today's Usage (UTC)", value: Self.currencyString(dailySpend))
+            )
+        }
         if let spend = snapshot.onDemandSpend, spend > 0 {
-            items.append(FooterItem(title: "On-Demand Spend", value: String(format: "$%.2f", spend)))
+            items.append(FooterItem(title: "Today's Spend", value: Self.currencyString(spend)))
         }
         if snapshot.isCreditOverageEnabled == true {
             items.append(FooterItem(title: "Overages", value: "Active"))
         }
         return items
+    }
+
+    private var openRouterBalanceRow: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text("Available balance")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(LiquidGlassTheme.textPrimary)
+            Spacer(minLength: 8)
+            Text(snapshot.creditsRemaining.map(Self.currencyString) ?? "Unavailable")
+                .font(.system(size: 11.5, weight: .semibold).monospacedDigit())
+                .foregroundStyle(openRouterBalanceColor)
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .liquidGlassRow(cornerRadius: 8, fill: rowFill)
+    }
+
+    private var openRouterKeyLimit: LimitMetric? {
+        snapshot.metrics.first { $0.id == "openrouter_key_limit" }
+    }
+
+    private var openRouterBalanceColor: Color {
+        guard let balance = snapshot.creditsRemaining else { return LiquidGlassTheme.textSecondary }
+        if balance < 1 { return LiquidGlassTheme.danger }
+        if balance < 2 { return LiquidGlassTheme.warning }
+        return LiquidGlassTheme.accent
+    }
+
+    private static func currencyString(_ amount: Double) -> String {
+        amount.formatted(.currency(code: "USD"))
     }
 
     private func footerRow(_ item: FooterItem) -> some View {

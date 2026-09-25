@@ -8,6 +8,7 @@ public struct ProviderUsageSnapshot: Codable, Identifiable, Sendable {
     public let metrics: [LimitMetric]
     public let creditsRemaining: Double?
     public let onDemandSpend: Double?
+    public let dailySpend: Double?
     public let isCreditOverageEnabled: Bool?
     public let isActive: Bool
     public let subscriptionEndsAt: Date?
@@ -21,6 +22,7 @@ public struct ProviderUsageSnapshot: Codable, Identifiable, Sendable {
         metrics: [LimitMetric],
         creditsRemaining: Double? = nil,
         onDemandSpend: Double? = nil,
+        dailySpend: Double? = nil,
         isCreditOverageEnabled: Bool? = nil,
         isActive: Bool = true,
         subscriptionEndsAt: Date? = nil,
@@ -33,6 +35,7 @@ public struct ProviderUsageSnapshot: Codable, Identifiable, Sendable {
         self.metrics = metrics
         self.creditsRemaining = creditsRemaining
         self.onDemandSpend = onDemandSpend
+        self.dailySpend = dailySpend
         self.isCreditOverageEnabled = isCreditOverageEnabled
         self.isActive = isActive
         self.subscriptionEndsAt = subscriptionEndsAt

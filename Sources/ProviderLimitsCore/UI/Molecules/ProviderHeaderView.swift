@@ -24,6 +24,7 @@ public struct ProviderHeaderView: View {
     public var body: some View {
         HStack(alignment: .center, spacing: 8) {
             ProviderLogoView(provider: provider, size: 19)
+            usageDetailsLink
 
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text(provider.displayName)
@@ -51,6 +52,30 @@ public struct ProviderHeaderView: View {
                     )
             }
         }
+    }
+
+    @ViewBuilder
+    private var usageDetailsLink: some View {
+        if let url = provider.usageDetailsURL {
+            Link(destination: url) {
+                usageLinkIcon
+            }
+            .buttonStyle(.plain)
+            .help(provider.usageDetailsTooltip)
+            .accessibilityLabel(provider.usageDetailsTooltip)
+        } else {
+            usageLinkIcon
+                .foregroundStyle(LiquidGlassTheme.textMuted)
+                .help(provider.usageDetailsTooltip)
+                .accessibilityLabel(provider.usageDetailsTooltip)
+        }
+    }
+
+    private var usageLinkIcon: some View {
+        Image(systemName: "link")
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(LiquidGlassTheme.textSecondary)
+            .frame(width: 14, height: 14)
     }
 
     public var formattedPlanName: String? {
