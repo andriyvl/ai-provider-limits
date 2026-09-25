@@ -28,6 +28,24 @@ Supported providers:
 
 ---
 
+## How Limit Values Are Retrieved
+
+AI Limits runs 100% locally on your workstation. It does not use intermediate proxy servers, cloud scrapers, or third-party telemetry. It reads active session credentials already stored by your installed developer tools and queries the official provider endpoints directly:
+
+| Provider | Local Credential Discovery | Upstream API Endpoint | Values & Metrics Extracted |
+|---|---|---|---|
+| **Google Antigravity** | `~/.omp/agent/agent.db` (`google-antigravity`) or local fallback `~/Library/Application Support/Antigravity/app_storage.json` | `POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` | Gemini 5-hour rolling session & weekly quota, Claude & GPT 5-hour & weekly limits, remaining percentages, reset timestamps, and model credit overage toggles. |
+| **OpenAI Codex** | `~/.codex/auth.json` or `~/.omp/agent/agent.db` (`openai-codex`), prioritised by latest unexpired JWT token | `GET https://chatgpt.com/backend-api/wham/usage` (passing `ChatGPT-Account-Id` when present) | Plan type (`ChatGPT Plus`, `ChatGPT Pro`, `Team`, `Enterprise`), primary 5-hour window, secondary weekly quota, reset timestamps, and remaining credits count. |
+| **Anthropic Claude** | `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`) | `GET https://api.anthropic.com/api/oauth/usage` | `five_hour` session window, `seven_day` weekly window, `seven_day_sonnet` and `seven_day_opus` caps, reset timestamps/durations, and `extra_usage.balance`. |
+| **Cursor** | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` (`ItemTable`) or `~/.omp/agent/agent.db` | `GET https://cursor.com/api/usage-summary`<br>`POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetCreditGrantsBalance`<br>`POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus` | Cursor Models allowance, Other Models allowance, Grok Bot weekly allowance & reset timestamp (`nextResetTimestampUtc`), on-demand spend, and billing cycle end date (`billingCycleEnd`). |
+| **OpenRouter** | `OPENROUTER_API_KEY` process environment or newest active `openrouter` entry in `~/.omp/agent/agent.db` | `GET https://openrouter.ai/api/v1/credits`<br>`GET https://openrouter.ai/api/v1/key` | Net available USD account balance (`total_credits - total_usage`), active API key spend limit & remaining balance, limit reset period, and UTC daily spend (`usage_daily`). |
+
+### Offline & Fallback Behavior
+- If an active network call fails (e.g. transient network drop or rate limit), the app maintains your last known cached snapshot from local storage so the menu bar doesn't flicker or reset to empty.
+- When credentials are completely missing for an unconfigured provider, that provider yields an inactive snapshot without making outbound requests.
+
+---
+
 ## How it looks
 <p align="center">
   <img src="assets/overview.png" width="360" alt="AI Limits menu bar overview">
