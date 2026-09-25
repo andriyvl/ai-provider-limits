@@ -12,15 +12,17 @@ Supported providers:
 - **OpenAI Codex** (Codex & ChatGPT models: 5-hour window, weekly quota, credits)
 - **Anthropic Claude** (5-hour and 7-day usage windows, plus Sonnet and Opus caps)
 - **Cursor** (Cursor Models & Other Models usage allowance, credits, subscription renewal date)
+- **OpenRouter** (Account credit balance, active API key spend limit & reset schedule, UTC daily usage)
 
 ---
 
 ## Highlights
 
-- **Zero API Key Configuration**: Reads active local workstation session credentials directly from existing developer tool logins (`~/.codex/auth.json`, `~/.claude/.credentials.json`, Cursor local state, Antigravity local app storage).
+- **Zero API Key Configuration**: Reads active local workstation session credentials directly from existing developer tool logins (`~/.codex/auth.json`, `~/.claude/.credentials.json`, Cursor local state, Antigravity local app storage, or local OMP credential storage in `~/.omp/agent/agent.db` / `OPENROUTER_API_KEY`).
+- **Direct Usage & Dashboard Links**: Click the link icon next to any provider header to jump straight to its web usage or spending dashboard.
 - **100% Private & Local**: Communicates directly from your Mac to official provider endpoints. No middleman servers, analytics, or third-party telemetry.
 - **Native SwiftUI Menu Bar Extra**: Lives unobtrusively in your menu bar. Click to inspect live linear progress bars, exact percentage remaining, countdown timers, and expiration badges.
-- **Subscription End Dates**: Color-coded badges (`till MMM d`) highlighting days remaining until billing cycle renewal.
+- **Subscription Renewal & Plan Badges**: Formatted plan names in headers (e.g. ChatGPT Pro, Claude Pro, Google AI Pro) and color-coded badges (`till MMM d`) highlighting days remaining until billing cycle renewal.
 - **Customizable Order & Toggles**: Reorder providers and hide inactive ones directly in settings.
 - **CLI Terminal Preview**: Inspect limits in any terminal using Unicode progress bars.
 
@@ -84,7 +86,7 @@ swift test
 
 ## Architecture
 
-- **`Sources/ProviderLimitsCore`**: Core domain logic, normalized data models (`ProviderUsageSnapshot`, `LimitMetric`), provider clients (`AntigravityProvider`, `CodexProvider`, `ClaudeProvider`, `CursorProvider`), and SwiftUI progress bar components.
+- **`Sources/ProviderLimitsCore`**: Core domain logic, normalized data models (`ProviderUsageSnapshot`, `LimitMetric`), provider clients (`AntigravityProvider`, `CodexProvider`, `ClaudeProvider`, `CursorProvider`, `OpenRouterProvider`), and SwiftUI progress bar components.
 - **`App/`**: Native macOS `MenuBarExtra` host application (`MenuBarHostApp.swift`, `MenuBarContentView.swift`).
 - **`Sources/ProviderLimitsCLI`**: Terminal preview tool for fast headless inspection.
 
