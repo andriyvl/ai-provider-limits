@@ -41,7 +41,7 @@ public enum LiquidGlassTheme {
         case .cursor:
             return Color(red: 0.78, green: 0.56, blue: 0.94)
         case .openRouter:
-            return Color(red: 0.62, green: 0.48, blue: 0.94)
+            return Color(red: 0.65, green: 0.54, blue: 0.88)
         }
     }
 
@@ -56,7 +56,7 @@ public enum LiquidGlassTheme {
         case .cursor:
             return cardBackground
         case .openRouter:
-            return Color(red: 0.21, green: 0.16, blue: 0.31)
+            return Color(red: 0.19, green: 0.17, blue: 0.27)
         }
     }
 
@@ -71,7 +71,7 @@ public enum LiquidGlassTheme {
         case .cursor:
             return rowBackground
         case .openRouter:
-            return Color(red: 0.28, green: 0.21, blue: 0.40)
+            return Color(red: 0.25, green: 0.22, blue: 0.34)
         }
     }
 }
