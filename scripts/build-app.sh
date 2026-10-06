@@ -44,6 +44,10 @@ swiftc \
     "${BUILD_DIR}"/ProviderLimitsCore.build/*.o \
     App/MenuBarHostApp.swift \
     App/MenuBarContentView.swift \
+    App/SettingsView.swift \
+    App/AboutSettingsSection.swift \
+    App/MenuBarState.swift \
+    App/MenuBarController.swift \
     -o "${MACOS_DIR}/AI Limits"
 
 codesign --force --deep --sign - --entitlements "App/ProviderLimits.entitlements" "${APP_DIR}" 2>/dev/null || true

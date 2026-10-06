@@ -32,6 +32,84 @@ struct ProviderLimitsCoreTests {
         #expect(snapshot.subscriptionStatus(relativeTo: baseDate.addingTimeInterval(8 * 86_400)) == .critical)
     }
 
+    @Test("Antigravity follows OMP rotation away from an exhausted account")
+    func testAntigravityRotatesExhaustedAccount() throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        var database: OpaquePointer?
+        try #require(sqlite3_open(databaseURL.path, &database) == SQLITE_OK)
+        let openedDatabase = try #require(database)
+        defer { sqlite3_close(openedDatabase) }
+
+        let sql = """
+        CREATE TABLE auth_credentials (
+            id INTEGER PRIMARY KEY,
+            provider TEXT NOT NULL,
+            disabled_cause TEXT,
+            data TEXT NOT NULL
+        );
+        CREATE TABLE cache (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
+        INSERT INTO auth_credentials VALUES
+            (5, 'google-antigravity', NULL, '{"access":"available-token","projectId":"available-project"}'),
+            (10, 'google-antigravity', NULL, '{"access":"exhausted-token","projectId":"exhausted-project"}');
+        INSERT INTO cache VALUES
+            ('session:sticky:google-antigravity:older', '{"credentialId":10,"lastUsedAtMs":100}', 4102444800),
+            ('session:sticky:google-antigravity:current', '{"credentialId":5,"lastUsedAtMs":200}', 4102444800);
+        """
+        try #require(sqlite3_exec(openedDatabase, sql, nil, nil, nil) == SQLITE_OK)
+
+        let provider = AntigravityProvider(agentDatabaseURL: databaseURL)
+        let credentials = try #require(provider.resolveCredentials())
+        #expect(credentials.projectId == "available-project")
+
+        let ignoredSelections = """
+        INSERT INTO cache VALUES
+            ('session:sticky:google-antigravity:invalid', 'invalid-json', 4102444800),
+            ('session:sticky:openai-codex:unrelated', '{"credentialId":10,"lastUsedAtMs":999}', 4102444800),
+            ('session:sticky:google-antigravity:expired', '{"credentialId":10,"lastUsedAtMs":999}', 0),
+            ('session:sticky:google-antigravity:removed', '{"credentialId":99,"lastUsedAtMs":999}', 4102444800);
+        """
+        try #require(sqlite3_exec(openedDatabase, ignoredSelections, nil, nil, nil) == SQLITE_OK)
+        #expect(provider.resolveCredentials()?.projectId == "available-project")
+
+        try #require(sqlite3_exec(
+            openedDatabase,
+            """
+            UPDATE cache SET value = '{"credentialId":10,"lastUsedAtMs":300}'
+            WHERE key = 'session:sticky:google-antigravity:older';
+            """,
+            nil, nil, nil
+        ) == SQLITE_OK)
+        #expect(provider.resolveCredentials()?.projectId == "exhausted-project")
+
+        try #require(sqlite3_exec(
+            openedDatabase,
+            "UPDATE cache SET expires_at = 0 WHERE key = 'session:sticky:google-antigravity:older';",
+            nil, nil, nil
+        ) == SQLITE_OK)
+        #expect(provider.resolveCredentials()?.projectId == "available-project")
+
+        try #require(sqlite3_exec(
+            openedDatabase,
+            "UPDATE auth_credentials SET disabled_cause = 'revoked' WHERE id = 5;",
+            nil, nil, nil
+        ) == SQLITE_OK)
+        #expect(provider.resolveCredentials()?.projectId == "exhausted-project")
+
+        try #require(sqlite3_exec(
+            openedDatabase,
+            "UPDATE auth_credentials SET disabled_cause = NULL; DROP TABLE cache;",
+            nil, nil, nil
+        ) == SQLITE_OK)
+        #expect(provider.resolveCredentials()?.projectId == "exhausted-project")
+    }
+
     @Test("Antigravity quota summary parser matches live Google response")
     func testAntigravityQuotaSummaryParser() throws {
         let json = """

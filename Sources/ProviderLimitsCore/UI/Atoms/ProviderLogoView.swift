@@ -9,14 +9,21 @@ import UIKit
 public struct ProviderLogoView: View {
     public let provider: ProviderType
     public let size: CGFloat
+    public let renderingMode: Image.TemplateRenderingMode?
 
-    public init(provider: ProviderType, size: CGFloat = 16) {
+    public init(
+        provider: ProviderType,
+        size: CGFloat = 16,
+        renderingMode: Image.TemplateRenderingMode? = nil
+    ) {
         self.provider = provider
         self.size = size
+        self.renderingMode = renderingMode
     }
 
     public var body: some View {
         logoImage
+            .renderingMode(renderingMode)
             .resizable()
             .interpolation(.high)
             .scaledToFit()

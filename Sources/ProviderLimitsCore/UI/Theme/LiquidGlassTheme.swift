@@ -15,6 +15,7 @@ public enum LiquidGlassTheme {
     public static let warning = Color(red: 0.88, green: 0.70, blue: 0.32)
     public static let danger = Color(red: 0.88, green: 0.42, blue: 0.42)
     public static let info = Color(red: 0.48, green: 0.68, blue: 0.90)
+    public static let openRouterBrand = Color(red: 0.5, green: 0.125, blue: 0.93)
 
     public static let activeBadgeText = Color(red: 0.38, green: 0.80, blue: 0.56)
     public static let activeBadgeBackground = Color(red: 0.18, green: 0.32, blue: 0.24)

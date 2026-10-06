@@ -8,34 +8,41 @@ public struct MenuBarContentView: View {
     public let snapshots: [ProviderType: ProviderUsageSnapshot]
     public let isRefreshing: Bool
     public let onRefresh: () -> Void
-    @State private var showingSettings = false
-    @AppStorage("showAntigravity") private var showAntigravity = true
-    @AppStorage("showCodex") private var showCodex = true
-    @AppStorage("showCursor") private var showCursor = true
-    @AppStorage("showClaude") private var showClaude = false
-    @AppStorage("showOpenRouter") private var showOpenRouter = false
-    @State private var providerOrder: [ProviderType] = AppGroupStore.shared.loadProviderOrder()
-    @State private var isAttributionHovered = false
+    public let providerOrder: [ProviderType]
+    public let showAntigravity: Bool
+    public let showCodex: Bool
+    public let showCursor: Bool
+    public let showClaude: Bool
+    public let showOpenRouter: Bool
+    public let onOpenSettings: () -> Void
     public init(
         snapshots: [ProviderType: ProviderUsageSnapshot],
         isRefreshing: Bool,
+        providerOrder: [ProviderType],
+        showAntigravity: Bool,
+        showCodex: Bool,
+        showCursor: Bool,
+        showClaude: Bool,
+        showOpenRouter: Bool,
+        onOpenSettings: @escaping () -> Void,
         onRefresh: @escaping () -> Void
     ) {
         self.snapshots = snapshots
         self.isRefreshing = isRefreshing
         self.onRefresh = onRefresh
+        self.providerOrder = providerOrder
+        self.showAntigravity = showAntigravity
+        self.showCodex = showCodex
+        self.showCursor = showCursor
+        self.showClaude = showClaude
+        self.showOpenRouter = showOpenRouter
+        self.onOpenSettings = onOpenSettings
     }
 
     public var body: some View {
-        Group {
-            if showingSettings {
-                settingsView
-            } else {
-                VStack(spacing: 0) {
-                    headerBar
-                    mainCardList
-                }
-            }
+        VStack(spacing: 0) {
+            headerBar
+            mainCardList
         }
         .frame(width: 360, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
@@ -43,7 +50,6 @@ public struct MenuBarContentView: View {
         .preferredColorScheme(.dark)
         .background(MenuBarWindowChrome())
     }
-
 
     private var mainCardList: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -68,79 +74,6 @@ public struct MenuBarContentView: View {
         .frame(maxHeight: maxScrollHeight)
     }
 
-    private var settingsView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Manage Providers")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(LiquidGlassTheme.textPrimary)
-
-                    Text("Toggle cards and arrange their order.")
-                        .font(.system(size: 10, weight: .regular))
-                        .foregroundStyle(LiquidGlassTheme.textSecondary)
-                }
-
-                Spacer()
-
-                Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        showingSettings = false
-                    }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(LiquidGlassTheme.textSecondary)
-                        .frame(width: 24, height: 24)
-                        .background(
-                            Circle()
-                                .fill(Color.white.opacity(0.08))
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.bottom, 2)
-
-            VStack(spacing: 7) {
-                ForEach(Array(providerOrder.enumerated()), id: \.element) { index, provider in
-                    providerSettingsRow(provider: provider, index: index, totalCount: providerOrder.count)
-                }
-            }
-
-
-            HStack(spacing: 4) {
-                Spacer()
-                Text("Created by")
-                    .foregroundStyle(LiquidGlassTheme.textDim)
-                Link(destination: URL(string: "https://github.com/andriyvl")!) {
-                    HStack(spacing: 2) {
-                        Text("Andriy Viychuk (@andriyvl)")
-                            .foregroundStyle(
-                                isAttributionHovered ? LiquidGlassTheme.textPrimary : LiquidGlassTheme.textSecondary
-                            )
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(
-                                isAttributionHovered ? LiquidGlassTheme.accent : LiquidGlassTheme.textDim
-                            )
-                    }
-                }
-                .buttonStyle(.plain)
-                .onHover { hovering in
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        isAttributionHovered = hovering
-                    }
-                }
-                Spacer()
-            }
-            .font(.system(size: 10, weight: .regular))
-            .padding(.top, 4)
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 12)
-        .padding(.bottom, 14)
-    }
-
     private var maxScrollHeight: CGFloat {
         #if os(macOS)
         let screenHeight = NSScreen.main?.visibleFrame.height ?? 800
@@ -150,62 +83,6 @@ public struct MenuBarContentView: View {
         #endif
     }
 
-    private func providerSettingsRow(provider: ProviderType, index: Int, totalCount: Int) -> some View {
-        let canMoveUp = index > 0
-        let canMoveDown = index < totalCount - 1
-        let isEnabled = isProviderEnabled(provider)
-
-        return HStack(spacing: 9) {
-            reorderButtons(provider: provider, canMoveUp: canMoveUp, canMoveDown: canMoveDown)
-            ProviderLogoView(provider: provider, size: 15)
-            Text(provider.displayName)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(isEnabled ? LiquidGlassTheme.textPrimary : LiquidGlassTheme.textDim)
-            Spacer()
-            Toggle("", isOn: binding(for: provider))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .tint(LiquidGlassTheme.accent)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .liquidGlassRow(cornerRadius: 8, fill: LiquidGlassTheme.rowBackground(for: provider))
-    }
-
-    private func reorderButtons(provider: ProviderType, canMoveUp: Bool, canMoveDown: Bool) -> some View {
-        HStack(spacing: 2) {
-            Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                    moveProvider(provider, moveUp: true)
-                }
-            } label: {
-                Image(systemName: "chevron.up")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(canMoveUp ? LiquidGlassTheme.textSecondary : LiquidGlassTheme.textDim.opacity(0.2))
-                    .frame(width: 20, height: 20)
-                    .background(Circle().fill(Color.white.opacity(canMoveUp ? 0.06 : 0.01)))
-            }
-            .buttonStyle(.plain)
-            .disabled(!canMoveUp)
-
-            Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                    moveProvider(provider, moveUp: false)
-                }
-            } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(
-                        canMoveDown ? LiquidGlassTheme.textSecondary : LiquidGlassTheme.textDim.opacity(0.2)
-                    )
-                    .frame(width: 20, height: 20)
-                    .background(Circle().fill(Color.white.opacity(canMoveDown ? 0.06 : 0.01)))
-            }
-            .buttonStyle(.plain)
-            .disabled(!canMoveDown)
-        }
-    }
     private func isProviderEnabled(_ provider: ProviderType) -> Bool {
         switch provider {
         case .antigravity: return showAntigravity
@@ -216,26 +93,6 @@ public struct MenuBarContentView: View {
         }
     }
 
-    private func binding(for provider: ProviderType) -> Binding<Bool> {
-        switch provider {
-        case .antigravity: return $showAntigravity
-        case .codex: return $showCodex
-        case .cursor: return $showCursor
-        case .claude: return $showClaude
-        case .openRouter: return $showOpenRouter
-        }
-    }
-
-
-    private func moveProvider(_ provider: ProviderType, moveUp: Bool) {
-        var list = providerOrder
-        guard let index = list.firstIndex(of: provider) else { return }
-        let newIndex = moveUp ? index - 1 : index + 1
-        guard newIndex >= 0 && newIndex < list.count else { return }
-        list.swapAt(index, newIndex)
-        providerOrder = list
-        AppGroupStore.shared.saveProviderOrder(list)
-    }
     private var visibleSnapshots: [ProviderUsageSnapshot] {
         providerOrder.compactMap { provider in
             guard isProviderEnabled(provider) else { return nil }
@@ -244,26 +101,20 @@ public struct MenuBarContentView: View {
         }
     }
 
-
-
-
     private var headerBar: some View {
         HStack(spacing: 8) {
             Spacer()
 
-            Button {
-                showingSettings.toggle()
-            } label: {
-                Image(systemName: showingSettings ? "xmark" : "gearshape")
+            Button(action: onOpenSettings) {
+                Image(systemName: "gearshape")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(showingSettings ? LiquidGlassTheme.textPrimary : LiquidGlassTheme.textSecondary)
+                    .foregroundStyle(LiquidGlassTheme.textSecondary)
                     .frame(width: 26, height: 26)
-                    .background(
-                        Circle()
-                            .fill(Color.white.opacity(showingSettings ? 0.12 : 0.06))
-                    )
+                    .background(Circle().fill(Color.white.opacity(0.06)))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Settings")
+            .help("Settings")
 
             Button(action: onRefresh) {
                 TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isRefreshing)) { context in

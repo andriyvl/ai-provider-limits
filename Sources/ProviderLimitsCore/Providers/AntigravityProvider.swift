@@ -21,6 +21,7 @@ public struct AntigravityProvider: AIProviderClient, Sendable {
     private let customToken: String?
     private let customProjectId: String?
     private let customEndpoint: URL?
+    private let agentDatabaseURL: URL?
 
     private static let defaultEndpoint = URL(
         string: "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
@@ -34,12 +35,16 @@ public struct AntigravityProvider: AIProviderClient, Sendable {
         customStoragePath: URL? = nil,
         customToken: String? = nil,
         customProjectId: String? = nil,
-        customEndpoint: URL? = nil
+        customEndpoint: URL? = nil,
+        agentDatabaseURL: URL? = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+            ".omp/agent/agent.db"
+        )
     ) {
         self.customStoragePath = customStoragePath
         self.customToken = customToken
         self.customProjectId = customProjectId
         self.customEndpoint = customEndpoint
+        self.agentDatabaseURL = agentDatabaseURL
     }
 
     public func fetchUsage() async throws -> ProviderUsageSnapshot {
@@ -64,10 +69,8 @@ public struct AntigravityProvider: AIProviderClient, Sendable {
             return AntigravityCredentials(accessToken: customToken, projectId: customProjectId)
         }
         #if os(macOS) && canImport(SQLite3)
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let dbURL = home.appendingPathComponent(".omp/agent/agent.db")
-        if FileManager.default.fileExists(atPath: dbURL.path) {
-            return readCredentialsFromSQLite(dbPath: dbURL.path)
+        if let agentDatabaseURL, FileManager.default.fileExists(atPath: agentDatabaseURL.path) {
+            return readCredentialsFromSQLite(dbPath: agentDatabaseURL.path)
         }
         #endif
         return nil
@@ -80,13 +83,30 @@ public struct AntigravityProvider: AIProviderClient, Sendable {
         defer { sqlite3_close(dbPointer) }
 
         let query = """
-        SELECT data FROM auth_credentials
-        WHERE (provider = 'google-antigravity' OR provider = 'antigravity')
-        AND disabled_cause IS NULL
-        ORDER BY id DESC LIMIT 1
+        WITH recent_accounts AS (
+            SELECT json_extract(value, '$.credentialId') AS credential_id,
+                   MAX(CAST(json_extract(value, '$.lastUsedAtMs') AS INTEGER)) AS last_used
+            FROM cache
+            WHERE (key LIKE 'session:sticky:google-antigravity:%' OR key LIKE 'session:sticky:antigravity:%')
+              AND expires_at > CAST(strftime('%s', 'now') AS INTEGER)
+              AND json_valid(value)
+            GROUP BY credential_id
+        )
+        SELECT credentials.data FROM auth_credentials AS credentials
+        LEFT JOIN recent_accounts ON recent_accounts.credential_id = credentials.id
+        WHERE credentials.provider IN ('google-antigravity', 'antigravity')
+          AND credentials.disabled_cause IS NULL
+        ORDER BY recent_accounts.last_used DESC, credentials.id DESC LIMIT 1
         """
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(dbPointer, query, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        if sqlite3_prepare_v2(dbPointer, query, -1, &stmt, nil) != SQLITE_OK {
+            let fallbackQuery = """
+            SELECT data FROM auth_credentials
+            WHERE provider IN ('google-antigravity', 'antigravity') AND disabled_cause IS NULL
+            ORDER BY id DESC LIMIT 1
+            """
+            guard sqlite3_prepare_v2(dbPointer, fallbackQuery, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        }
         defer { sqlite3_finalize(stmt) }
 
         guard sqlite3_step(stmt) == SQLITE_ROW, let cString = sqlite3_column_text(stmt, 0) else { return nil }

@@ -46,6 +46,10 @@ targets:
     sources:
       - path: App/MenuBarHostApp.swift
       - path: App/MenuBarContentView.swift
+      - path: App/SettingsView.swift
+      - path: App/AboutSettingsSection.swift
+      - path: App/MenuBarState.swift
+      - path: App/MenuBarController.swift
       - path: App/Resources
         buildPhase: resources
       - path: LICENSE
