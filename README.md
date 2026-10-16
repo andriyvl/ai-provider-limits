@@ -18,7 +18,7 @@ Supported providers:
 
 ## Highlights
 
-- **Zero API Key Configuration**: Reads active local workstation session credentials directly from existing developer tool logins (`~/.codex/auth.json`, `~/.claude/.credentials.json`, Cursor local state, Antigravity local app storage, or local OMP credential storage in `~/.omp/agent/agent.db` / `OPENROUTER_API_KEY`).
+- **Zero API Key Configuration**: Reads active local workstation session credentials directly from existing developer tool logins (`~/.codex/auth.json`, `~/.claude/.credentials.json`, Cursor and Antigravity IDE local state, Pi's `auth.json`, or local OMP credential storage in `~/.omp/agent/agent.db` / `OPENROUTER_API_KEY`), read-only.
 - **Direct Usage & Dashboard Links**: Click the link icon next to any provider header to jump straight to its web usage or spending dashboard.
 - **100% Private & Local**: Communicates directly from your Mac to official provider endpoints. No middleman servers, analytics, or third-party telemetry.
 - **Native macOS Menu Bar App**: Click to inspect live SwiftUI usage cards with percentage remaining, countdown timers, and expiration badges. Right-click for Settings… and Quit.
@@ -34,7 +34,7 @@ AI Limits runs 100% locally on your workstation. It does not use intermediate pr
 
 | Provider | Local Credential Discovery | Upstream API Endpoint | Values & Metrics Extracted |
 |---|---|---|---|
-| **Google Antigravity** | `~/.omp/agent/agent.db` (`google-antigravity`) or local fallback `~/Library/Application Support/Antigravity/app_storage.json` | `POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` | Gemini 5-hour rolling session & weekly quota, Claude & GPT 5-hour & weekly limits, remaining percentages, reset timestamps, and model credit overage toggles. |
+| **Google Antigravity** | Antigravity IDE login (`~/Library/Application Support/Antigravity IDE/User/globalStorage/state.vscdb`) or `~/.omp/agent/agent.db` (`google-antigravity`); expired omp tokens are renewed in memory, never written back | `POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` | Gemini 5-hour rolling session & weekly quota, Claude & GPT 5-hour & weekly limits, remaining percentages, reset timestamps, and model credit overage toggles. |
 | **OpenAI Codex** | `~/.codex/auth.json` or `~/.omp/agent/agent.db` (`openai-codex`), prioritised by latest unexpired JWT token | `GET https://chatgpt.com/backend-api/wham/usage` (passing `ChatGPT-Account-Id` when present) | Plan type (`ChatGPT Plus`, `ChatGPT Pro`, `Team`, `Enterprise`), primary 5-hour window, secondary weekly quota, reset timestamps, and remaining credits count. |
 | **Anthropic Claude** | `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`) or `~/.omp/agent/agent.db` (`anthropic`) | `GET https://api.anthropic.com/api/oauth/usage` | `five_hour` session window, `seven_day` weekly window, `seven_day_sonnet` and `seven_day_opus` caps, reset timestamps/durations, and `extra_usage.balance`. |
 | **Cursor** | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` (`ItemTable`) or `~/.omp/agent/agent.db` | `GET https://cursor.com/api/usage-summary`<br>`POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetCreditGrantsBalance`<br>`POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus` | Cursor Models allowance, Other Models allowance, Grok Bot weekly allowance & reset timestamp (`nextResetTimestampUtc`), on-demand spend, and billing cycle end date (`billingCycleEnd`). |
