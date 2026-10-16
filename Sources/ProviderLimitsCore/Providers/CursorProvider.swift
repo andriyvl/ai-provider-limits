@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(SQLite3)
-import SQLite3
-#endif
 
 public struct CursorCredentials: Sendable {
     public let accessToken: String
@@ -14,6 +11,7 @@ public struct CursorCredentials: Sendable {
         self.membershipType = membershipType
     }
 }
+
 public struct SandUsageStatus: Sendable, Equatable {
     public let usedPercentage: Double
     public let resetsAt: Date?
@@ -30,153 +28,67 @@ public struct SandUsageStatus: Sendable, Equatable {
     }
 }
 
-
-public struct CursorProvider: AIProviderClient, Sendable {
+public struct CursorProvider: CredentialUsageClient, Sendable {
     public let providerType: ProviderType = .cursor
-    private let configURL: URL?
-    private let customToken: String?
-    private let customUserId: String?
-
-    private static let summaryBaseURL = "https://cursor.com/api/usage-summary"
-    private static let creditGrantsURL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCreditGrantsBalance"
-    private static let sandUsageURL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus"
+    public let credentialResolver: CredentialResolver
+    private let session: URLSession
+    private let summaryBaseURL: URL
+    private let creditGrantsURL: URL
+    private let sandUsageURL: URL
 
     public init(
-        configURL: URL? = nil,
-        customToken: String? = nil,
-        customUserId: String? = nil
+        resolver: CredentialResolver = CredentialResolver(),
+        session: URLSession = .shared,
+        summaryBaseURL: URL = URL(string: "https://cursor.com/api/usage-summary")!,
+        creditGrantsURL: URL = URL(string: "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCreditGrantsBalance")!,
+        sandUsageURL: URL = URL(string: "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus")!
     ) {
-        self.configURL = configURL
-        self.customToken = customToken
-        self.customUserId = customUserId
+        self.credentialResolver = resolver
+        self.session = session
+        self.summaryBaseURL = summaryBaseURL
+        self.creditGrantsURL = creditGrantsURL
+        self.sandUsageURL = sandUsageURL
     }
 
-    public func fetchUsage() async throws -> ProviderUsageSnapshot {
-        if let credentials = resolveCredentials() {
-            do {
-                return try await fetchLiveUsage(credentials: credentials)
-            } catch let error as ProviderClientError {
-                if case .rateLimited = error { throw error }
-            }
-        }
-
-        let fileURL = resolveConfigURL()
-        if FileManager.default.fileExists(atPath: fileURL.path),
-           let data = try? Data(contentsOf: fileURL),
-           let snapshot = try? parseUsagePayload(data: data) {
-            return snapshot
-        }
-
-        return ProviderUsageSnapshot.empty(for: .cursor)
+    public func fetchUsage(selection: CredentialSelection = .automatic) async throws -> ProviderUsageSnapshot {
+        try await fetchSelectedUsage(selection: selection)
     }
 
-    public func resolveCredentials() -> CursorCredentials? {
-        if let customToken, let customUserId {
-            return CursorCredentials(accessToken: customToken, userId: customUserId)
+    func fetchUsage(using candidate: CredentialCandidate) async throws -> ProviderUsageSnapshot {
+        guard case let .cursor(credentials) = candidate.payload,
+              !credentials.accessToken.isEmpty,
+              !credentials.userId.isEmpty else {
+            throw ProviderClientError.missingCredentials(.cursor)
         }
 
-        #if os(macOS) && canImport(SQLite3)
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let vscdbURL = home.appendingPathComponent(
-            "Library/Application Support/Cursor/User/globalStorage/state.vscdb"
-        )
-        if FileManager.default.fileExists(atPath: vscdbURL.path),
-           let creds = readCredentialsFromVscdb(dbPath: vscdbURL.path) {
-            return creds
-        }
-
-        let agentDbURL = home.appendingPathComponent(".omp/agent/agent.db")
-        if FileManager.default.fileExists(atPath: agentDbURL.path),
-           let creds = readCredentialsFromAgentDb(dbPath: agentDbURL.path) {
-            return creds
-        }
-        #endif
-
-        return nil
+        return try await fetchLiveUsage(credentials: credentials)
     }
-
-    #if os(macOS) && canImport(SQLite3)
-    private func readCredentialsFromVscdb(dbPath: String) -> CursorCredentials? {
-        var dbPointer: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &dbPointer, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_close(dbPointer) }
-
-        var token: String?
-        var userId: String?
-        var membership: String?
-
-        let query = """
-        SELECT key, value FROM ItemTable
-        WHERE key IN ('cursorAuth/accessToken', 'cursorAuth/stripeMembershipAuthId', 'cursorAuth/stripeMembershipType')
-        """
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(dbPointer, query, -1, &stmt, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_finalize(stmt) }
-
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            guard let keyC = sqlite3_column_text(stmt, 0), let valC = sqlite3_column_text(stmt, 1) else { continue }
-            let key = String(cString: keyC)
-            let val = String(cString: valC)
-            if key == "cursorAuth/accessToken" { token = val }
-            if key == "cursorAuth/stripeMembershipAuthId" { userId = val }
-            if key == "cursorAuth/stripeMembershipType" { membership = val }
-        }
-
-        guard let token, !token.isEmpty, let userId, !userId.isEmpty else { return nil }
-        return CursorCredentials(accessToken: token, userId: userId, membershipType: membership)
-    }
-
-    private func readCredentialsFromAgentDb(dbPath: String) -> CursorCredentials? {
-        var dbPointer: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &dbPointer, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_close(dbPointer) }
-
-        let query = """
-        SELECT data FROM auth_credentials
-        WHERE provider = 'cursor' AND disabled_cause IS NULL
-        ORDER BY id DESC LIMIT 1
-        """
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(dbPointer, query, -1, &stmt, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_finalize(stmt) }
-
-        guard sqlite3_step(stmt) == SQLITE_ROW, let cString = sqlite3_column_text(stmt, 0) else { return nil }
-        guard let data = String(cString: cString).data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = json["access"] as? String, !token.isEmpty else { return nil }
-
-        let userId = parseUserIdFromJWT(token) ?? "user"
-        return CursorCredentials(accessToken: token, userId: userId)
-    }
-
-    func parseUserIdFromJWT(_ jwt: String) -> String? {
-        let parts = jwt.split(separator: ".")
-        guard parts.count >= 2 else { return nil }
-        var base64 = String(parts[1])
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        while base64.count % 4 != 0 { base64.append("=") }
-        guard let data = Data(base64Encoded: base64),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return json["sub"] as? String
-    }
-    #endif
 
     private func fetchLiveUsage(credentials: CursorCredentials) async throws -> ProviderUsageSnapshot {
-        guard let url = URL(string: "\(Self.summaryBaseURL)?user=\(credentials.userId)") else {
+        guard var components = URLComponents(url: summaryBaseURL, resolvingAgainstBaseURL: false) else {
+            throw ProviderClientError.invalidResponse(.cursor, "Invalid URL")
+        }
+        components.queryItems = [URLQueryItem(name: "user", value: credentials.userId)]
+        guard let url = components.url else {
             throw ProviderClientError.invalidResponse(.cursor, "Invalid URL")
         }
 
+        let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
+        guard let encodedUserId = credentials.userId.addingPercentEncoding(withAllowedCharacters: unreserved),
+              !encodedUserId.isEmpty else {
+            throw ProviderClientError.invalidResponse(.cursor, "Invalid user identifier")
+        }
+
+        let cookieVal = "\(encodedUserId)%3A%3A\(credentials.accessToken)"
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        let cookieVal = "\(credentials.userId)%3A%3A\(credentials.accessToken)"
         request.setValue("WorkosCursorSessionToken=\(cookieVal)", forHTTPHeaderField: "Cookie")
         request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         async let creditsTask = fetchCreditGrantsBalance(token: credentials.accessToken)
         async let sandUsageTask = fetchSandUsageStatus(token: credentials.accessToken)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ProviderClientError.invalidResponse(.cursor, "Missing HTTP response")
         }
@@ -192,24 +104,27 @@ public struct CursorProvider: AIProviderClient, Sendable {
         let creditsRemaining = await creditsTask
         let sandUsage = await sandUsageTask
 
-        return try parseLiveUsageJSON(
+        let snapshot = try parseLiveUsageJSON(
             json: json,
             credentials: credentials,
             creditsRemaining: creditsRemaining,
             sandUsage: sandUsage
         )
+        guard !snapshot.metrics.isEmpty || snapshot.creditsRemaining != nil else {
+            throw ProviderClientError.invalidResponse(.cursor, "Empty usage payload")
+        }
+        return snapshot
     }
 
     private func fetchCreditGrantsBalance(token: String) async -> Double? {
-        guard let url = URL(string: Self.creditGrantsURL) else { return nil }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: creditGrantsURL)
         request.httpMethod = "POST"
         request.httpBody = Data("{}".utf8)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
 
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
+        guard let (data, response) = try? await session.data(for: request),
               let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -232,16 +147,16 @@ public struct CursorProvider: AIProviderClient, Sendable {
 
         return nil
     }
+
     public func fetchSandUsageStatus(token: String) async -> SandUsageStatus? {
-        guard let url = URL(string: Self.sandUsageURL) else { return nil }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: sandUsageURL)
         request.httpMethod = "POST"
         request.httpBody = Data("{}".utf8)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
 
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
+        guard let (data, response) = try? await session.data(for: request),
               let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -331,7 +246,6 @@ public struct CursorProvider: AIProviderClient, Sendable {
         return nil
     }
 
-
     public func parseLiveUsageJSON(
         json: [String: Any],
         credentials: CursorCredentials,
@@ -403,7 +317,6 @@ public struct CursorProvider: AIProviderClient, Sendable {
             ))
         }
 
-
         let parsedCredits = creditsRemaining ?? (json["credits_remaining"] as? Double) ?? (json["credits"] as? Double)
 
         return ProviderUsageSnapshot(
@@ -429,18 +342,17 @@ public struct CursorProvider: AIProviderClient, Sendable {
         let days = Int(interval / 86400)
         return "\(days) \(days == 1 ? "day" : "days")"
     }
-    private func resolveConfigURL() -> URL {
-        if let configURL { return configURL }
-        #if os(macOS)
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(".cursor/cli-config.json")
-        #else
-        let docs = FileManager.default.urls(
-            for: .documentDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.temporaryDirectory
-        return docs.appendingPathComponent("cursor_config.json")
-        #endif
+
+    public func parseUserIdFromJWT(_ jwt: String) -> String? {
+        let parts = jwt.split(separator: ".")
+        guard parts.count >= 2 else { return nil }
+        var base64 = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 { base64.append("=") }
+        guard let data = Data(base64Encoded: base64),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return json["sub"] as? String
     }
 
     public func parseUsagePayload(data: Data) throws -> ProviderUsageSnapshot {
@@ -488,7 +400,6 @@ public struct CursorProvider: AIProviderClient, Sendable {
                     ?? parseBillingEndDescription(resetsAt)
             ))
         }
-
 
         return ProviderUsageSnapshot(
             provider: .cursor,

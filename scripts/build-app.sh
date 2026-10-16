@@ -37,6 +37,7 @@ cp "${ROOT_DIR}/LICENSE" "${ROOT_DIR}/NOTICE" "${RESOURCES_DIR}/"
 
 echo "Compiling App Binary..."
 swiftc \
+    -swift-version 6 \
     -O \
     -parse-as-library \
     -target "${ARCH}-apple-macosx14.0" \

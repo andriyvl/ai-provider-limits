@@ -53,7 +53,7 @@ public enum LiquidGlassTheme {
         case .codex:
             return Color(red: 0.14, green: 0.23, blue: 0.29)
         case .claude:
-            return Color(red: 0.28, green: 0.18, blue: 0.14)
+            return Color(red: 0.24, green: 0.20, blue: 0.18)
         case .cursor:
             return cardBackground
         case .openRouter:
@@ -68,7 +68,7 @@ public enum LiquidGlassTheme {
         case .codex:
             return Color(red: 0.18, green: 0.28, blue: 0.35)
         case .claude:
-            return Color(red: 0.34, green: 0.23, blue: 0.18)
+            return Color(red: 0.30, green: 0.25, blue: 0.23)
         case .cursor:
             return rowBackground
         case .openRouter:

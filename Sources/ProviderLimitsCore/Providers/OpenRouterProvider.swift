@@ -1,37 +1,31 @@
 import Foundation
 
-#if canImport(SQLite3)
-import SQLite3
-#endif
-
-public struct OpenRouterProvider: AIProviderClient, Sendable {
+public struct OpenRouterProvider: CredentialUsageClient, Sendable {
     public let providerType: ProviderType = .openRouter
+    public let credentialResolver: CredentialResolver
     private let session: URLSession
-    private let environment: [String: String]
-    private let agentDatabaseURL: URL?
     private let creditsEndpoint: URL
     private var keyEndpoint: URL {
         creditsEndpoint.deletingLastPathComponent().appendingPathComponent("key")
     }
 
     public init(
+        resolver: CredentialResolver = CredentialResolver(),
         session: URLSession = .shared,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        creditsEndpoint: URL = URL(string: "https://openrouter.ai/api/v1/credits")!,
-        agentDatabaseURL: URL? = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".omp/agent/agent.db"
-        )
+        creditsEndpoint: URL = URL(string: "https://openrouter.ai/api/v1/credits")!
     ) {
+        self.credentialResolver = resolver
         self.session = session
-        self.environment = environment
         self.creditsEndpoint = creditsEndpoint
-        self.agentDatabaseURL = agentDatabaseURL
     }
 
-    public func fetchUsage() async throws -> ProviderUsageSnapshot {
-        let ompKey = agentDatabaseURL.flatMap { Self.loadOMPAPIKey(from: $0) }
-        guard let apiKey = Self.resolveAPIKey(environment: environment, ompKey: ompKey) else {
-            return ProviderUsageSnapshot(provider: .openRouter, planName: "", metrics: [], isActive: false)
+    public func fetchUsage(selection: CredentialSelection = .automatic) async throws -> ProviderUsageSnapshot {
+        try await fetchSelectedUsage(selection: selection)
+    }
+
+    func fetchUsage(using candidate: CredentialCandidate) async throws -> ProviderUsageSnapshot {
+        guard case let .openRouter(apiKey) = candidate.payload, !apiKey.isEmpty else {
+            throw ProviderClientError.missingCredentials(.openRouter)
         }
 
         async let creditsData = fetch(endpoint: creditsEndpoint, apiKey: apiKey)
@@ -63,40 +57,6 @@ public struct OpenRouterProvider: AIProviderClient, Sendable {
             creditsRemaining: credits.totalCredits - credits.totalUsage,
             dailySpend: key?.usageDaily
         )
-    }
-
-    public static func resolveAPIKey(environment: [String: String], ompKey: String?) -> String? {
-        for candidate in [environment["OPENROUTER_API_KEY"], ompKey] {
-            guard let candidate else { continue }
-            let key = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !key.isEmpty { return key }
-        }
-        return nil
-    }
-
-    static func loadOMPAPIKey(from databaseURL: URL) -> String? {
-        #if os(macOS) && canImport(SQLite3)
-        var database: OpaquePointer?
-        guard sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_close(database) }
-
-        let query = """
-            SELECT data FROM auth_credentials
-            WHERE provider = 'openrouter' AND disabled_cause IS NULL
-            ORDER BY id DESC LIMIT 1
-            """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_finalize(statement) }
-
-        guard sqlite3_step(statement) == SQLITE_ROW, let value = sqlite3_column_text(statement, 0),
-            let data = String(cString: value).data(using: .utf8),
-            let credential = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return credential["key"] as? String
-        #else
-        return nil
-        #endif
     }
 
     public static func parseCredits(data: Data) throws -> (totalCredits: Double, totalUsage: Double) {
@@ -155,7 +115,6 @@ public struct OpenRouterProvider: AIProviderClient, Sendable {
         }
     }
 
-
     private func fetch(endpoint: URL, apiKey: String) async throws -> Data {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
@@ -174,7 +133,9 @@ public struct OpenRouterProvider: AIProviderClient, Sendable {
     }
 }
 
-private struct OpenRouterCreditsResponse: Decodable { let data: OpenRouterCredits }
+private struct OpenRouterCreditsResponse: Decodable {
+    let data: OpenRouterCredits
+}
 
 private struct OpenRouterCredits: Decodable {
     let totalCredits: Double
@@ -185,4 +146,3 @@ private struct OpenRouterCredits: Decodable {
         case totalUsage = "total_usage"
     }
 }
-

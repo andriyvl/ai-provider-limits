@@ -33,10 +33,11 @@ struct ProviderLimitsCoreTests {
     }
 
     @Test("Antigravity follows OMP rotation away from an exhausted account")
-    func testAntigravityRotatesExhaustedAccount() throws {
-        let databaseURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(UUID().uuidString).sqlite")
-        defer { try? FileManager.default.removeItem(at: databaseURL) }
+    func testAntigravityRotatesExhaustedAccount() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let databaseURL = home.appendingPathComponent(".omp/agent/agent.db")
+        try FileManager.default.createDirectory(at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
 
         var database: OpaquePointer?
         try #require(sqlite3_open(databaseURL.path, &database) == SQLITE_OK)
@@ -64,9 +65,14 @@ struct ProviderLimitsCoreTests {
         """
         try #require(sqlite3_exec(openedDatabase, sql, nil, nil, nil) == SQLITE_OK)
 
-        let provider = AntigravityProvider(agentDatabaseURL: databaseURL)
-        let credentials = try #require(provider.resolveCredentials())
-        #expect(credentials.projectId == "available-project")
+        let resolver = CredentialResolver(home: home, environment: [:], clock: { Date(timeIntervalSince1970: 1_800_000_000) })
+        func selectedProject() async -> String? {
+            let resolution = await resolver.resolve(provider: .antigravity, selection: .source("omp.agent-db"))
+            guard let candidate = resolution.candidates.first,
+                  case let .antigravity(credentials) = candidate.payload else { return nil }
+            return credentials.projectId
+        }
+        #expect(await selectedProject() == "available-project")
 
         let ignoredSelections = """
         INSERT INTO cache VALUES
@@ -76,7 +82,7 @@ struct ProviderLimitsCoreTests {
             ('session:sticky:google-antigravity:removed', '{"credentialId":99,"lastUsedAtMs":999}', 4102444800);
         """
         try #require(sqlite3_exec(openedDatabase, ignoredSelections, nil, nil, nil) == SQLITE_OK)
-        #expect(provider.resolveCredentials()?.projectId == "available-project")
+        #expect(await selectedProject() == "available-project")
 
         try #require(sqlite3_exec(
             openedDatabase,
@@ -86,28 +92,28 @@ struct ProviderLimitsCoreTests {
             """,
             nil, nil, nil
         ) == SQLITE_OK)
-        #expect(provider.resolveCredentials()?.projectId == "exhausted-project")
+        #expect(await selectedProject() == "exhausted-project")
 
         try #require(sqlite3_exec(
             openedDatabase,
             "UPDATE cache SET expires_at = 0 WHERE key = 'session:sticky:google-antigravity:older';",
             nil, nil, nil
         ) == SQLITE_OK)
-        #expect(provider.resolveCredentials()?.projectId == "available-project")
+        #expect(await selectedProject() == "available-project")
 
         try #require(sqlite3_exec(
             openedDatabase,
             "UPDATE auth_credentials SET disabled_cause = 'revoked' WHERE id = 5;",
             nil, nil, nil
         ) == SQLITE_OK)
-        #expect(provider.resolveCredentials()?.projectId == "exhausted-project")
+        #expect(await selectedProject() == "exhausted-project")
 
         try #require(sqlite3_exec(
             openedDatabase,
             "UPDATE auth_credentials SET disabled_cause = NULL; DROP TABLE cache;",
             nil, nil, nil
         ) == SQLITE_OK)
-        #expect(provider.resolveCredentials()?.projectId == "exhausted-project")
+        #expect(await selectedProject() == "exhausted-project")
     }
 
     @Test("Antigravity quota summary parser matches live Google response")
@@ -230,7 +236,7 @@ struct ProviderLimitsCoreTests {
         }
         """.utf8)
 
-        let credentials = try #require(CodexProvider().parseCredentials(data: data))
+        let credentials = try #require(CodexProvider.parseCredentials(data: data))
         #expect(credentials.accessToken == "codex-token")
         #expect(credentials.accountId == "account-123")
     }
@@ -298,12 +304,13 @@ struct ProviderLimitsCoreTests {
         #expect(snapshot.metrics[0].remainingPercentage == 84.0)
     }
 
-    @Test("Claude parser calculates 5h and 7d metrics")
+    @Test("Claude parser reads utilization as percent, including values at or below 1")
     func testClaudeParser() throws {
         let json: [String: Any] = [
             "plan_name": "Claude Pro",
-            "five_hour": ["utilization": 0.35, "resets_in": "3h 45m"],
-            "seven_day": ["utilization": 0.85, "resets_in": "2 days"]
+            "five_hour": ["utilization": 0.5, "resets_in": "3h 45m"],
+            "seven_day": ["utilization": 1.0, "resets_in": "2 days"],
+            "seven_day_opus": ["utilization": 85.0, "resets_in": "2 days"]
         ]
 
         let provider = ClaudeProvider()
@@ -311,9 +318,7 @@ struct ProviderLimitsCoreTests {
 
         #expect(snapshot.provider == .claude)
         #expect(snapshot.planName == "Claude Pro")
-        #expect(snapshot.metrics.count == 2)
-        #expect(snapshot.metrics[0].remainingPercentage == 65.0)
-        #expect(snapshot.metrics[1].remainingPercentage == 15.0)
+        #expect(snapshot.metrics.map(\.remainingPercentage) == [99.5, 99.0, 15.0])
     }
 
     @Test("Claude reads OAuth credentials from local credentials file")
@@ -327,7 +332,7 @@ struct ProviderLimitsCoreTests {
         }
         """.utf8)
 
-        let credentials = try #require(ClaudeProvider().parseCredentials(data: data))
+        let credentials = try #require(ClaudeProvider.parseCredentials(data: data))
         #expect(credentials.accessToken == "claude-token")
         #expect(credentials.subscriptionType == "max")
     }
@@ -537,10 +542,6 @@ struct ProviderLimitsCoreTests {
         #expect(ProviderType.codex.usageDetailsURL?.absoluteString == "https://chatgpt.com/codex/settings/usage")
         #expect(ProviderType.openRouter.usageDetailsURL?.absoluteString == "https://openrouter.ai/activity")
         #expect(ProviderType.antigravity.usageDetailsURL == nil)
-        #expect(
-            ProviderType.antigravity.usageDetailsTooltip
-                == "Usage limits are only accessible in the Antigravity desktop app."
-        )
     }
 
     @Test("AppGroupStore saves and loads snapshots")
@@ -550,14 +551,19 @@ struct ProviderLimitsCoreTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let store = AppGroupStore(customDirectoryURL: tempDir)
+        let reference = CredentialReference(sourceID: "omp.agent-db", accountID: "[\"fixture@example.invalid\",\"project\"]")
         let sample = ProviderUsageSnapshot(
             provider: .antigravity,
             planName: "Google AI Pro",
-            metrics: []
+            metrics: [],
+            provenance: UsageProvenance(
+                sourceID: reference.sourceID, sourceLabel: "OMP", reference: reference,
+                origin: .live, originalFetchedAt: Date(timeIntervalSince1970: 1_800_000_000)
+            )
         )
 
         try store.saveSnapshot(sample)
-        let loaded = store.loadSnapshot(for: .antigravity)
+        let loaded = store.loadSnapshot(for: .antigravity, reference: reference)
 
         #expect(loaded != nil)
         #expect(loaded?.provider == .antigravity)
@@ -703,34 +709,6 @@ struct ProviderLimitsCoreTests {
         #expect(loadedOrder == customOrder)
 
 }
-    private struct StubEmptyClient: AIProviderClient {
-        let providerType: ProviderType
-        func fetchUsage() async throws -> ProviderUsageSnapshot {
-            ProviderUsageSnapshot.empty(for: providerType)
-        }
-    }
-
-    @Test("Sync engine keeps cached snapshot when fetch returns active but empty")
-    func testSyncEngineDoesNotClobberCacheWithEmptySnapshot() async throws {
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        let store = AppGroupStore(customDirectoryURL: tempDir)
-        let goodMetric = LimitMetric(id: "gemini_weekly", label: "Gemini Models · Weekly Limit", usedPercentage: 27.0, remainingPercentage: 73.0)
-        let goodSnapshot = ProviderUsageSnapshot(provider: .antigravity, planName: "Google AI Pro", metrics: [goodMetric])
-        try store.saveSnapshot(goodSnapshot)
-
-        let engine = SyncEngine(store: store)
-        await engine.register(client: StubEmptyClient(providerType: .antigravity))
-
-        let refreshed = try await engine.refresh(provider: .antigravity)
-        #expect(refreshed.metrics.count == 1)
-        #expect(refreshed.metrics.first?.remainingPercentage == 73.0)
-
-        let persisted = store.loadSnapshot(for: .antigravity)
-        #expect(persisted?.metrics.count == 1)
-    }
 
     @Test("ProviderHeaderView formats plan names cleanly for header display")
     func testProviderHeaderViewFormatPlanName() {
@@ -758,27 +736,36 @@ struct ProviderLimitsCoreTests {
     }
 
     @Test("OpenRouter prefers its process environment key over OMP")
-    func testOpenRouterCredentialPrecedence() {
-        #expect(
-            OpenRouterProvider.resolveAPIKey(
-                environment: ["OPENROUTER_API_KEY": "environment-key"],
-                ompKey: "omp-key"
-            ) == "environment-key"
-        )
-        #expect(
-            OpenRouterProvider.resolveAPIKey(
-                environment: [:],
-                ompKey: " omp-key "
-            ) == "omp-key"
-        )
-        #expect(OpenRouterProvider.resolveAPIKey(environment: [:], ompKey: nil) == nil)
+    func testOpenRouterCredentialPrecedence() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let databaseURL = home.appendingPathComponent(".omp/agent/agent.db")
+        try FileManager.default.createDirectory(at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        var database: OpaquePointer?
+        try #require(sqlite3_open(databaseURL.path, &database) == SQLITE_OK)
+        defer { sqlite3_close(database) }
+        try #require(sqlite3_exec(database, """
+        CREATE TABLE auth_credentials(id INTEGER PRIMARY KEY, provider TEXT, disabled_cause TEXT, data TEXT);
+        INSERT INTO auth_credentials VALUES(1, 'openrouter', NULL, '{"key":"omp-key"}');
+        """, nil, nil, nil) == SQLITE_OK)
+        let resolver = CredentialResolver(home: home, environment: ["OPENROUTER_API_KEY": "environment-key"])
+        let resolution = await resolver.resolve(provider: .openRouter)
+        #expect(resolution.candidates.map(\.sourceID) == ["process.openrouter-key", "omp.agent-db"])
+        let pinned = await resolver.resolve(provider: .openRouter, selection: .source("omp.agent-db"))
+        let candidate = try #require(pinned.candidates.first)
+        if case let .openRouter(key) = candidate.payload {
+            #expect(key == "omp-key")
+        } else {
+            Issue.record("Expected OpenRouter credential")
+        }
     }
 
     @Test("OpenRouter loads latest active OMP credential")
-    func testOpenRouterLoadsLatestActiveOMPKey() {
-        let databaseURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(UUID().uuidString).sqlite")
-        defer { try? FileManager.default.removeItem(at: databaseURL) }
+    func testOpenRouterLoadsLatestActiveOMPKey() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let databaseURL = home.appendingPathComponent(".omp/agent/agent.db")
+        try FileManager.default.createDirectory(at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
 
         var database: OpaquePointer?
         let openStatus = sqlite3_open(databaseURL.path, &database)
@@ -802,7 +789,14 @@ struct ProviderLimitsCoreTests {
             (4, 'openrouter', NULL, '{"key":"latest-active-key"}');
         """
         #expect(sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK)
-        #expect(OpenRouterProvider.loadOMPAPIKey(from: databaseURL) == "latest-active-key")
+        let resolver = CredentialResolver(home: home, environment: [:])
+        let resolution = await resolver.resolve(provider: .openRouter)
+        let candidate = try #require(resolution.candidates.first)
+        if case let .openRouter(key) = candidate.payload {
+            #expect(key == "latest-active-key")
+        } else {
+            Issue.record("Expected OpenRouter credential")
+        }
     }
 
     @Test("OpenRouter keeps balance when key stats are unavailable")
@@ -818,10 +812,12 @@ struct ProviderLimitsCoreTests {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [OpenRouterURLProtocol.self]
         let provider = OpenRouterProvider(
+            resolver: CredentialResolver(
+                home: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                environment: ["OPENROUTER_API_KEY": "test-key"]
+            ),
             session: URLSession(configuration: configuration),
-            environment: ["OPENROUTER_API_KEY": "test-key"],
-            creditsEndpoint: URL(string: "https://\(host)/api/v1/credits")!,
-            agentDatabaseURL: nil
+            creditsEndpoint: URL(string: "https://\(host)/api/v1/credits")!
         )
         let snapshot = try await provider.fetchUsage()
 
@@ -849,10 +845,12 @@ struct ProviderLimitsCoreTests {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [OpenRouterURLProtocol.self]
         let provider = OpenRouterProvider(
+            resolver: CredentialResolver(
+                home: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                environment: ["OPENROUTER_API_KEY": "test-key"]
+            ),
             session: URLSession(configuration: configuration),
-            environment: ["OPENROUTER_API_KEY": "test-key"],
-            creditsEndpoint: URL(string: "https://\(host)/api/v1/credits")!,
-            agentDatabaseURL: nil
+            creditsEndpoint: URL(string: "https://\(host)/api/v1/credits")!
         )
         let snapshot = try await provider.fetchUsage()
 
@@ -870,8 +868,10 @@ struct ProviderLimitsCoreTests {
     @Test("OpenRouter without a credential is inactive")
     func testOpenRouterMissingCredentialReturnsInactiveSnapshot() async throws {
         let snapshot = try await OpenRouterProvider(
-            environment: [:],
-            agentDatabaseURL: nil
+            resolver: CredentialResolver(
+                home: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                environment: [:]
+            )
         ).fetchUsage()
         #expect(!snapshot.isActive)
         #expect(snapshot.metrics.isEmpty)

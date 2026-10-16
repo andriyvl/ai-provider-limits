@@ -13,6 +13,7 @@ public struct ProviderUsageSnapshot: Codable, Identifiable, Sendable {
     public let isActive: Bool
     public let subscriptionEndsAt: Date?
     public let errorMessage: String?
+    public let provenance: UsageProvenance?
 
     public init(
         id: String? = nil,
@@ -26,7 +27,8 @@ public struct ProviderUsageSnapshot: Codable, Identifiable, Sendable {
         isCreditOverageEnabled: Bool? = nil,
         isActive: Bool = true,
         subscriptionEndsAt: Date? = nil,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        provenance: UsageProvenance? = nil
     ) {
         self.id = id ?? provider.rawValue
         self.provider = provider
@@ -40,6 +42,7 @@ public struct ProviderUsageSnapshot: Codable, Identifiable, Sendable {
         self.isActive = isActive
         self.subscriptionEndsAt = subscriptionEndsAt
         self.errorMessage = errorMessage
+        self.provenance = provenance
     }
 
     public var hasError: Bool {
@@ -68,6 +71,15 @@ public struct ProviderUsageSnapshot: Codable, Identifiable, Sendable {
         }
     }
 
+    public func withProvenance(_ provenance: UsageProvenance) -> ProviderUsageSnapshot {
+        ProviderUsageSnapshot(
+            id: id, provider: provider, planName: planName, fetchedAt: fetchedAt, metrics: metrics,
+            creditsRemaining: creditsRemaining, onDemandSpend: onDemandSpend, dailySpend: dailySpend,
+            isCreditOverageEnabled: isCreditOverageEnabled, isActive: isActive,
+            subscriptionEndsAt: subscriptionEndsAt, errorMessage: errorMessage, provenance: provenance
+        )
+    }
+
     public static func empty(for provider: ProviderType) -> ProviderUsageSnapshot {
         ProviderUsageSnapshot(
             provider: provider,
@@ -75,7 +87,7 @@ public struct ProviderUsageSnapshot: Codable, Identifiable, Sendable {
             metrics: [],
             creditsRemaining: nil,
             isCreditOverageEnabled: nil,
-            isActive: true
+            isActive: false
         )
     }
 

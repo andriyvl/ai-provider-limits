@@ -8,8 +8,9 @@ struct MenuBarHostApp {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let engine = SyncEngine()
+        let state = MenuBarState(engine: engine)
         let controller = MenuBarController(
-            state: MenuBarState(),
+            state: state,
             refreshSnapshots: { await engine.refreshAll() }
         )
         app.delegate = controller

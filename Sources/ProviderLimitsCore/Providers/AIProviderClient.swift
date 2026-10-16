@@ -2,7 +2,8 @@ import Foundation
 
 public protocol AIProviderClient: Sendable {
     var providerType: ProviderType { get }
-    func fetchUsage() async throws -> ProviderUsageSnapshot
+    var credentialResolver: CredentialResolver { get }
+    func fetchUsage(selection: CredentialSelection) async throws -> ProviderUsageSnapshot
 }
 
 public enum ProviderClientError: Error, LocalizedError, Sendable {

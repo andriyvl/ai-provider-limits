@@ -1,12 +1,11 @@
 import Foundation
-#if canImport(SQLite3)
-import SQLite3
-#endif
 
 public struct AntigravityCredentials: Sendable {
     public let accessToken: String
     public let projectId: String
     public let email: String?
+    /// Set only when `accessToken` has expired; the provider renews it in memory before fetching.
+    var renewal: AntigravityRenewal?
 
     public init(accessToken: String, projectId: String, email: String? = nil) {
         self.accessToken = accessToken
@@ -15,120 +14,99 @@ public struct AntigravityCredentials: Sendable {
     }
 }
 
-public struct AntigravityProvider: AIProviderClient, Sendable {
-    public let providerType: ProviderType = .antigravity
-    private let customStoragePath: URL?
-    private let customToken: String?
-    private let customProjectId: String?
-    private let customEndpoint: URL?
-    private let agentDatabaseURL: URL?
+/// What renewing an expired omp Antigravity token needs. The OAuth client comes from the local omp
+/// install at runtime, so this repository never contains it.
+struct AntigravityRenewal: Sendable {
+    let refreshToken: String
+    let clientID: String
+    let clientSecret: String
+}
 
-    private static let defaultEndpoint = URL(
-        string: "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
-    )!
-    private static let fallbackModelsEndpoint = URL(
-        string: "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
-    )!
-    private static let userAgent = "antigravity/hub/2.8.0 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)"
+/// Renewed Antigravity access tokens, kept in memory only. Never written back to the owning tool's store.
+/// Google keeps the refresh token unchanged on renewal, so the owning tool's login stays valid.
+private actor AntigravityTokenRenewer {
+    static let shared = AntigravityTokenRenewer()
+
+    private static let tokenEndpoint = URL(string: "https://oauth2.googleapis.com/token")!
+
+    private var renewedTokens: [String: (accessToken: String, expiresAt: Date)] = [:]
+
+    func accessToken(for renewal: AntigravityRenewal, session: URLSession) async throws -> String {
+        if let cached = renewedTokens[renewal.refreshToken], cached.expiresAt > Date() {
+            return cached.accessToken
+        }
+        var request = URLRequest(url: Self.tokenEndpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        var form = URLComponents()
+        form.queryItems = [
+            URLQueryItem(name: "client_id", value: renewal.clientID),
+            URLQueryItem(name: "client_secret", value: renewal.clientSecret),
+            URLQueryItem(name: "refresh_token", value: renewal.refreshToken),
+            URLQueryItem(name: "grant_type", value: "refresh_token")
+        ]
+        // URLComponents leaves "+" unescaped, which form decoding would read as a space.
+        request.httpBody = form.percentEncodedQuery.map { Data($0.replacingOccurrences(of: "+", with: "%2B").utf8) }
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accessToken = CredentialParsing.nonempty(json["access_token"]) else {
+            throw ProviderClientError.invalidResponse(.antigravity, "Token renewal failed")
+        }
+        let lifetime = CredentialParsing.number(json["expires_in"]) ?? 3_600
+        renewedTokens[renewal.refreshToken] = (accessToken, Date().addingTimeInterval(lifetime - 300))
+        return accessToken
+    }
+}
+
+public struct AntigravityProvider: CredentialUsageClient, Sendable {
+    public let providerType: ProviderType = .antigravity
+    public let credentialResolver: CredentialResolver
+    private let session: URLSession
+
+    private static let cloudCodeBaseURL = URL(string: "https://cloudcode-pa.googleapis.com")!
+    private static let dailyCloudCodeBaseURL = URL(string: "https://daily-cloudcode-pa.googleapis.com")!
+    private static let nativeUserAgent = "antigravity/2.5.5 darwin/arm64"
+    private static let ompUserAgent = "antigravity/hub/2.8.0 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)"
 
     public init(
-        customStoragePath: URL? = nil,
-        customToken: String? = nil,
-        customProjectId: String? = nil,
-        customEndpoint: URL? = nil,
-        agentDatabaseURL: URL? = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".omp/agent/agent.db"
-        )
+        resolver: CredentialResolver = CredentialResolver(),
+        session: URLSession = .shared
     ) {
-        self.customStoragePath = customStoragePath
-        self.customToken = customToken
-        self.customProjectId = customProjectId
-        self.customEndpoint = customEndpoint
-        self.agentDatabaseURL = agentDatabaseURL
+        self.credentialResolver = resolver
+        self.session = session
     }
 
-    public func fetchUsage() async throws -> ProviderUsageSnapshot {
-        if let credentials = resolveCredentials() {
-            do {
-                return try await fetchLiveQuotaSummary(credentials: credentials)
-            } catch let error as ProviderClientError {
-                if case .rateLimited = error { throw error }
-            }
-        }
-        let storageURL = resolveStorageURL()
-        if FileManager.default.fileExists(atPath: storageURL.path),
-           let data = try? Data(contentsOf: storageURL),
-           let snapshot = try? parseStorage(data: data) {
-            return snapshot
-        }
-        return ProviderUsageSnapshot.empty(for: .antigravity)
+    public func fetchUsage(selection: CredentialSelection = .automatic) async throws -> ProviderUsageSnapshot {
+        try await fetchSelectedUsage(selection: selection)
     }
 
-    public func resolveCredentials() -> AntigravityCredentials? {
-        if let customToken, let customProjectId {
-            return AntigravityCredentials(accessToken: customToken, projectId: customProjectId)
+    func fetchUsage(using candidate: CredentialCandidate) async throws -> ProviderUsageSnapshot {
+        switch candidate.payload {
+        case let .antigravity(credentials):
+            return try await fetchOMPUsage(credentials: credentials)
+        case let .nativeAntigravity(nativeCreds):
+            return try await fetchNativeUsage(credentials: nativeCreds)
+        default:
+            throw ProviderClientError.invalidResponse(.antigravity, "Unsupported credential payload for Antigravity")
         }
-        #if os(macOS) && canImport(SQLite3)
-        if let agentDatabaseURL, FileManager.default.fileExists(atPath: agentDatabaseURL.path) {
-            return readCredentialsFromSQLite(dbPath: agentDatabaseURL.path)
-        }
-        #endif
-        return nil
     }
 
-    #if os(macOS) && canImport(SQLite3)
-    private func readCredentialsFromSQLite(dbPath: String) -> AntigravityCredentials? {
-        var dbPointer: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &dbPointer, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_close(dbPointer) }
-
-        let query = """
-        WITH recent_accounts AS (
-            SELECT json_extract(value, '$.credentialId') AS credential_id,
-                   MAX(CAST(json_extract(value, '$.lastUsedAtMs') AS INTEGER)) AS last_used
-            FROM cache
-            WHERE (key LIKE 'session:sticky:google-antigravity:%' OR key LIKE 'session:sticky:antigravity:%')
-              AND expires_at > CAST(strftime('%s', 'now') AS INTEGER)
-              AND json_valid(value)
-            GROUP BY credential_id
-        )
-        SELECT credentials.data FROM auth_credentials AS credentials
-        LEFT JOIN recent_accounts ON recent_accounts.credential_id = credentials.id
-        WHERE credentials.provider IN ('google-antigravity', 'antigravity')
-          AND credentials.disabled_cause IS NULL
-        ORDER BY recent_accounts.last_used DESC, credentials.id DESC LIMIT 1
-        """
-        var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(dbPointer, query, -1, &stmt, nil) != SQLITE_OK {
-            let fallbackQuery = """
-            SELECT data FROM auth_credentials
-            WHERE provider IN ('google-antigravity', 'antigravity') AND disabled_cause IS NULL
-            ORDER BY id DESC LIMIT 1
-            """
-            guard sqlite3_prepare_v2(dbPointer, fallbackQuery, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    private func fetchOMPUsage(credentials: AntigravityCredentials) async throws -> ProviderUsageSnapshot {
+        var accessToken = credentials.accessToken
+        if let renewal = credentials.renewal {
+            accessToken = try await AntigravityTokenRenewer.shared.accessToken(for: renewal, session: session)
         }
-        defer { sqlite3_finalize(stmt) }
-
-        guard sqlite3_step(stmt) == SQLITE_ROW, let cString = sqlite3_column_text(stmt, 0) else { return nil }
-        guard let data = String(cString: cString).data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        let token = json["access"] as? String ?? json["accessToken"] as? String
-        let projectId = json["projectId"] as? String
-        guard let token, !token.isEmpty, let projectId, !projectId.isEmpty else { return nil }
-        return AntigravityCredentials(accessToken: token, projectId: projectId, email: json["email"] as? String)
-    }
-    #endif
-
-    private func fetchLiveQuotaSummary(credentials: AntigravityCredentials) async throws -> ProviderUsageSnapshot {
-        let endpoint = customEndpoint ?? Self.defaultEndpoint
-        var request = URLRequest(url: endpoint)
+        let quotaURL = Self.dailyCloudCodeBaseURL.appendingPathComponent("v1internal:retrieveUserQuotaSummary")
+        var request = URLRequest(url: quotaURL)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(Self.ompUserAgent, forHTTPHeaderField: "User-Agent")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["project": credentials.projectId])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ProviderClientError.invalidResponse(.antigravity, "Missing HTTP response")
         }
@@ -138,19 +116,82 @@ public struct AntigravityProvider: AIProviderClient, Sendable {
         guard httpResponse.statusCode == 200 else {
             throw ProviderClientError.invalidResponse(.antigravity, "HTTP \(httpResponse.statusCode)")
         }
-        return try parseQuotaSummary(data: data)
+        return try parseLiveQuotaSummary(data: data)
     }
 
-    private func resolveStorageURL() -> URL {
-        if let customStoragePath { return customStoragePath }
-        #if os(macOS)
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent("Library/Application Support/Antigravity/app_storage.json")
-        #else
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return docs.appendingPathComponent("app_storage.json")
-        #endif
+    private func fetchNativeUsage(credentials: NativeAntigravityCredentials) async throws -> ProviderUsageSnapshot {
+        let project = try await loadNativeCodeAssistProject(credentials: credentials)
+        guard !project.isEmpty else {
+            throw ProviderClientError.invalidResponse(.antigravity, "Missing project from loadCodeAssist")
+        }
+
+        let quotaBase = credentials.isGCPTOS ? Self.cloudCodeBaseURL : Self.dailyCloudCodeBaseURL
+        let quotaURL = quotaBase.appendingPathComponent("v1internal:retrieveUserQuotaSummary")
+        var request = URLRequest(url: quotaURL)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(Self.nativeUserAgent, forHTTPHeaderField: "User-Agent")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["project": project])
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ProviderClientError.invalidResponse(.antigravity, "Missing HTTP response")
+        }
+        if httpResponse.statusCode == 429 {
+            throw ProviderClientError.rateLimited(.antigravity, nil)
+        }
+        guard httpResponse.statusCode == 200 else {
+            throw ProviderClientError.invalidResponse(.antigravity, "HTTP \(httpResponse.statusCode)")
+        }
+        return try parseLiveQuotaSummary(data: data)
+    }
+
+    private func loadNativeCodeAssistProject(credentials: NativeAntigravityCredentials) async throws -> String {
+        let loadURL = Self.cloudCodeBaseURL.appendingPathComponent("v1internal:loadCodeAssist")
+        var request = URLRequest(url: loadURL)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(Self.nativeUserAgent, forHTTPHeaderField: "User-Agent")
+
+        let body: [String: Any] = [
+            "metadata": [
+                "ide_type": "ANTIGRAVITY",
+                "ide_name": "antigravity",
+                "ide_version": "2.5.5"
+            ]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ProviderClientError.invalidResponse(.antigravity, "Missing HTTP response from loadCodeAssist")
+        }
+        if httpResponse.statusCode == 429 {
+            throw ProviderClientError.rateLimited(.antigravity, nil)
+        }
+        guard httpResponse.statusCode == 200 else {
+            throw ProviderClientError.invalidResponse(.antigravity, "loadCodeAssist HTTP \(httpResponse.statusCode)")
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ProviderClientError.invalidResponse(.antigravity, "Invalid loadCodeAssist response JSON")
+        }
+
+        let project = CredentialParsing.nonempty(json["cloudaicompanion_project"])
+            ?? CredentialParsing.nonempty(json["cloudaicompanionProject"])
+        guard let project else {
+            throw ProviderClientError.invalidResponse(.antigravity, "Empty cloudaicompanion_project")
+        }
+        return project
+    }
+
+    private func parseLiveQuotaSummary(data: Data) throws -> ProviderUsageSnapshot {
+        let snapshot = try parseQuotaSummary(data: data)
+        guard !snapshot.metrics.isEmpty || snapshot.creditsRemaining != nil else {
+            throw ProviderClientError.invalidResponse(.antigravity, "Empty quota response")
+        }
+        return snapshot
     }
 
     public func parseStorage(data: Data) throws -> ProviderUsageSnapshot {
@@ -223,7 +264,7 @@ public struct AntigravityProvider: AIProviderClient, Sendable {
     public func parseQuotaSummary(data: Data) throws -> ProviderUsageSnapshot {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let groups = json["groups"] as? [[String: Any]] else {
-            return ProviderUsageSnapshot.empty(for: .antigravity)
+            throw ProviderClientError.invalidResponse(.antigravity, "Missing or invalid groups in quota summary")
         }
         let metrics = groups.flatMap { parseQuotaGroup($0) }
         return ProviderUsageSnapshot(
@@ -315,6 +356,7 @@ public struct AntigravityProvider: AIProviderClient, Sendable {
         }
         return "Resets soon"
     }
+
     private func parseRelativeDurationDate(_ desc: String?) -> Date? {
         guard let desc else { return nil }
         var cleaned = desc.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

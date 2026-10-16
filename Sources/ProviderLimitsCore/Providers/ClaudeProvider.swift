@@ -10,86 +10,66 @@ public struct ClaudeCredentials: Sendable {
     }
 }
 
-public struct ClaudeProvider: AIProviderClient, Sendable {
+public struct ClaudeProvider: CredentialUsageClient, Sendable {
     public let providerType: ProviderType = .claude
-    private let credentialsFileURL: URL?
-    private let customToken: String?
-    private let customEndpoint: URL?
+    public let credentialResolver: CredentialResolver
+    private let session: URLSession
+    private let endpoint: URL
 
     private static let usageEndpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
     public init(
-        credentialsFileURL: URL? = nil,
-        customToken: String? = nil,
-        customEndpoint: URL? = nil
+        resolver: CredentialResolver = CredentialResolver(),
+        session: URLSession = .shared,
+        endpoint: URL? = nil
     ) {
-        self.credentialsFileURL = credentialsFileURL
-        self.customToken = customToken
-        self.customEndpoint = customEndpoint
+        self.credentialResolver = resolver
+        self.session = session
+        self.endpoint = endpoint ?? Self.usageEndpoint
     }
 
-    public func fetchUsage() async throws -> ProviderUsageSnapshot {
-        if let credentials = resolveCredentials() {
-            do {
-                return try await fetchLiveUsage(credentials: credentials)
-            } catch let error as ProviderClientError {
-                if case .rateLimited = error { throw error }
-            }
-        }
-
-        let credentialsURL = resolveCredentialsURL()
-        if let data = try? Data(contentsOf: credentialsURL) {
-            return try parseCredentialsOrUsage(data: data)
-        }
-        return ProviderUsageSnapshot(
-            provider: .claude,
-            planName: "Claude",
-            metrics: [],
-            isActive: false
-        )
+    public func fetchUsage(selection: CredentialSelection = .automatic) async throws -> ProviderUsageSnapshot {
+        try await fetchSelectedUsage(selection: selection)
     }
 
-    public func resolveCredentials() -> ClaudeCredentials? {
-        if let customToken {
-            return ClaudeCredentials(accessToken: customToken)
+    func fetchUsage(using candidate: CredentialCandidate) async throws -> ProviderUsageSnapshot {
+        guard case let .claude(credentials) = candidate.payload, !credentials.accessToken.isEmpty else {
+            throw ProviderClientError.missingCredentials(.claude)
         }
-        guard let data = try? Data(contentsOf: resolveCredentialsURL()) else {
-            return nil
-        }
-        return parseCredentials(data: data)
-    }
 
-    public func parseCredentials(data: Data) -> ClaudeCredentials? {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ProviderClientError.invalidResponse(.claude, "Missing HTTP response")
+        }
+        if httpResponse.statusCode == 429 {
+            throw ProviderClientError.rateLimited(.claude, nil)
+        }
+        guard httpResponse.statusCode == 200 else {
+            throw ProviderClientError.invalidResponse(.claude, "HTTP \(httpResponse.statusCode)")
+        }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
+            throw ProviderClientError.invalidResponse(.claude, "Invalid JSON")
         }
-        let oauth = json["claudeAiOauth"] as? [String: Any]
-        let accessToken = oauth?["accessToken"] as? String
-            ?? oauth?["access_token"] as? String
-            ?? json["accessToken"] as? String
-            ?? json["access_token"] as? String
-        guard let accessToken, !accessToken.isEmpty else { return nil }
 
-        let subscriptionType = oauth?["subscriptionType"] as? String
-            ?? oauth?["subscription_type"] as? String
-            ?? json["subscriptionType"] as? String
-            ?? json["subscription_type"] as? String
-        return ClaudeCredentials(accessToken: accessToken, subscriptionType: subscriptionType)
+        let usageJSON = (json["usage"] as? [String: Any]) ?? json
+        let snapshot = try parseUsagePayload(
+            json: usageJSON,
+            planName: planName(for: credentials.subscriptionType)
+        )
+        guard !snapshot.metrics.isEmpty || snapshot.creditsRemaining != nil else {
+            throw ProviderClientError.invalidResponse(.claude, "Empty usage payload")
+        }
+        return snapshot
     }
 
-    public func parseCredentialsOrUsage(data: Data) throws -> ProviderUsageSnapshot {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ProviderUsageSnapshot.empty(for: .claude)
-        }
-        if let usage = json["usage"] as? [String: Any] {
-            return try parseUsagePayload(json: usage)
-        }
-        return ProviderUsageSnapshot(
-            provider: .claude,
-            planName: "Claude",
-            metrics: [],
-            isActive: false
-        )
+    public static func parseCredentials(data: Data) -> ClaudeCredentials? {
+        CredentialParsing.parseClaudeCredentials(data: data)
     }
 
     public func parseUsagePayload(
@@ -97,10 +77,10 @@ public struct ClaudeProvider: AIProviderClient, Sendable {
         planName: String? = nil
     ) throws -> ProviderUsageSnapshot {
         let windows = [
-            ("five_hour", "claude_5hour", "5-Hour Session Window"),
-            ("seven_day", "claude_weekly", "Weekly Usage Limit"),
-            ("seven_day_sonnet", "claude_sonnet", "Sonnet 7-Day Limit"),
-            ("seven_day_opus", "claude_opus", "Opus 7-Day Limit")
+            ("five_hour", "claude_5hour", "Claude Models · 5-Hour Limit"),
+            ("seven_day", "claude_weekly", "Claude Models · Weekly Limit"),
+            ("seven_day_sonnet", "claude_sonnet", "Sonnet · Weekly Limit"),
+            ("seven_day_opus", "claude_opus", "Opus · Weekly Limit")
         ]
         let metrics = windows.compactMap { window -> LimitMetric? in
             let (key, id, label) = window
@@ -119,39 +99,13 @@ public struct ClaudeProvider: AIProviderClient, Sendable {
         )
     }
 
-    private func fetchLiveUsage(credentials: ClaudeCredentials) async throws -> ProviderUsageSnapshot {
-        var request = URLRequest(url: customEndpoint ?? Self.usageEndpoint)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw ProviderClientError.invalidResponse(.claude, "Missing HTTP response")
-        }
-        if httpResponse.statusCode == 429 {
-            throw ProviderClientError.rateLimited(.claude, nil)
-        }
-        guard httpResponse.statusCode == 200 else {
-            throw ProviderClientError.invalidResponse(.claude, "HTTP \(httpResponse.statusCode)")
-        }
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ProviderClientError.invalidResponse(.claude, "Invalid JSON")
-        }
-        return try parseUsagePayload(
-            json: json,
-            planName: planName(for: credentials.subscriptionType)
-        )
-    }
-
     private func parseUsageMetric(
         _ usage: [String: Any],
         id: String,
         label: String
     ) -> LimitMetric {
-        let utilization = numericValue(usage["utilization"]) ?? 0.0
-        let usedPercentage = utilization > 1.0 ? utilization : utilization * 100.0
+        // The OAuth usage endpoint reports utilization as a percent (0–100); 1.0 means 1% used.
+        let usedPercentage = numericValue(usage["utilization"]) ?? 0.0
         let relativeReset = usage["resets_in"] as? String
         let resetDate = parseResetDate(usage["resets_at"] as? String)
             ?? parseRelativeResetDate(relativeReset)
@@ -163,22 +117,6 @@ public struct ClaudeProvider: AIProviderClient, Sendable {
             resetsAt: resetDate,
             resetInDescription: relativeReset ?? formatResetDescription(resetDate)
         )
-    }
-
-    private func resolveCredentialsURL() -> URL {
-        if let credentialsFileURL {
-            return credentialsFileURL
-        }
-        #if os(macOS)
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/.credentials.json")
-        #else
-        let documents = FileManager.default.urls(
-            for: .documentDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.temporaryDirectory
-        return documents.appendingPathComponent("claude_credentials.json")
-        #endif
     }
 
     private func parseResetDate(_ value: String?) -> Date? {

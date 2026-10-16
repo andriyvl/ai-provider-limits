@@ -63,8 +63,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
         appItem.submenu = makeAppMenu()
         menuBar.addItem(appItem)
         NSApplication.shared.mainMenu = menuBar
+
         Task { [weak self] in
             await self?.state.loadCachedSnapshots()
+        }
+
+        if CommandLine.arguments.contains("--settings") {
+            showSettings()
         }
     }
 
@@ -159,9 +164,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
         guard !state.isRefreshing else { return }
         state.isRefreshing = true
         defer { state.isRefreshing = false }
+        let capturedEpochs = state.captureEpochs()
         let snapshots = await refreshSnapshots()
         if !snapshots.isEmpty {
-            state.snapshots = snapshots
+            state.applyRefreshAll(results: snapshots, capturedEpochs: capturedEpochs)
         }
     }
 
@@ -179,6 +185,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
                 return icon
             }
         }
-        return NSImage(systemSymbolName: "circle", accessibilityDescription: "AI Limits")!
+        let image = NSImage(size: NSSize(width: 18, height: 18))
+        image.lockFocus()
+        NSColor.white.setFill()
+        let path = NSBezierPath(ovalIn: NSRect(x: 3, y: 3, width: 12, height: 12))
+        path.fill()
+        image.unlockFocus()
+        image.isTemplate = true
+        return image
     }
 }

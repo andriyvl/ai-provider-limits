@@ -74,6 +74,10 @@ public struct ProviderWidgetView: View {
                     }
                 }
             }
+
+            if let provenance = snapshot.provenance {
+                provenanceRow(provenance)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
 
@@ -187,6 +191,59 @@ public struct ProviderWidgetView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .liquidGlassRow(cornerRadius: 8, fill: rowFill)
+    }
+
+    private func provenanceRow(_ provenance: UsageProvenance) -> some View {
+        HStack(alignment: .center, spacing: 5) {
+            Image(systemName: provenanceOriginIcon(provenance.origin))
+                .font(.system(size: 9.5))
+                .foregroundStyle(LiquidGlassTheme.textDim)
+
+            Text(provenance.displayLabel)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(LiquidGlassTheme.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 4)
+
+            if provenance.origin == .appCache {
+                Text("Cached")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(LiquidGlassTheme.warning)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1.5)
+                    .background(
+                        Capsule()
+                            .fill(LiquidGlassTheme.warning.opacity(0.16))
+                    )
+            } else if provenance.origin == .toolStored {
+                Text("Tool Stored")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(LiquidGlassTheme.info)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1.5)
+                    .background(
+                        Capsule()
+                            .fill(LiquidGlassTheme.info.opacity(0.16))
+                    )
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("provenance-label-\(snapshot.provider.rawValue)")
+    }
+
+    private func provenanceOriginIcon(_ origin: UsageDataOrigin) -> String {
+        switch origin {
+        case .live:
+            return "antenna.radiowaves.left.and.right"
+        case .toolStored:
+            return "internaldrive"
+        case .appCache:
+            return "clock.arrow.circlepath"
+        }
     }
 }
 

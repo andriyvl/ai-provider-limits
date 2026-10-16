@@ -64,6 +64,7 @@ public struct MenuBarContentView: View {
                 } else {
                     ForEach(visibleSnapshots, id: \.id) { snapshot in
                         ProviderWidgetView(snapshot: snapshot, size: .medium, isCard: true)
+                            .accessibilityIdentifier("provider-card-\(snapshot.provider.rawValue)")
                     }
                 }
             }
@@ -114,6 +115,7 @@ public struct MenuBarContentView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Settings")
+            .accessibilityIdentifier("settings-button")
             .help("Settings")
 
             Button(action: onRefresh) {
@@ -130,6 +132,7 @@ public struct MenuBarContentView: View {
                 }
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("refresh-button")
             .disabled(isRefreshing)
 
             Button {
