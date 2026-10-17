@@ -47,14 +47,14 @@ struct ProviderCredentialIntegrationTests {
             let snapshot = try await provider.fetchUsage()
             #expect(snapshot.provider == .claude)
             #expect(snapshot.isActive)
-            #expect(snapshot.planName == "Claude Pro")
+            #expect(snapshot.planName == "Pro")
             #expect(snapshot.metrics.count == 2)
             #expect(snapshot.provenance?.sourceID == "native.claude-credentials")
             #expect(snapshot.provenance?.origin == .live)
             #expect(snapshot.provenance?.accountLabel == nil)
 
             let recorded = IntegrationTestURLProtocol.recordedRequests(for: host)
-            #expect(recorded.count == 1)
+            #expect(recorded.map { $0.url?.lastPathComponent } == ["usage", "profile"])
 
             #expect(!snapshot.planName.contains(secretToken))
             #expect(!(snapshot.provenance?.sourceLabel.contains(secretToken) ?? false))

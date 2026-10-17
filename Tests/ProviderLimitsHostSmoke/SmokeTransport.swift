@@ -219,6 +219,12 @@ final class SmokeURLProtocol: URLProtocol, @unchecked Sendable {
         }
 
         if host.contains("anthropic.com") {
+            if path.hasSuffix("/profile") {
+                let json = """
+                {"organization": {"organization_type": "claude_pro", "rate_limit_tier": "default_claude_pro"}}
+                """
+                return (200, Data(json.utf8), headers)
+            }
             if path.contains("usage") {
                 let json = """
                 {

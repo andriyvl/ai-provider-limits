@@ -124,7 +124,7 @@ public struct ProviderWidgetView: View {
 
     private var footerItems: [FooterItem] {
         var items: [FooterItem] = []
-        if let credits = snapshot.creditsRemaining, snapshot.provider != .openRouter {
+        if let credits = snapshot.creditsRemaining, credits > 0, snapshot.provider != .openRouter {
             let value = snapshot.provider == .cursor
                 ? String(format: "$%.2f remaining", credits)
                 : "\(Int(credits))"

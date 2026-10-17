@@ -58,14 +58,44 @@ public struct ClaudeProvider: CredentialUsageClient, Sendable {
         }
 
         let usageJSON = (json["usage"] as? [String: Any]) ?? json
-        let snapshot = try parseUsagePayload(
-            json: usageJSON,
-            planName: planName(for: credentials.subscriptionType)
-        )
+        let resolvedPlanName = await fetchProfilePlanName(accessToken: credentials.accessToken)
+            ?? planName(for: credentials.subscriptionType)
+        let snapshot = try parseUsagePayload(json: usageJSON, planName: resolvedPlanName)
         guard !snapshot.metrics.isEmpty || snapshot.creditsRemaining != nil else {
             throw ProviderClientError.invalidResponse(.claude, "Empty usage payload")
         }
         return snapshot
+    }
+
+    /// Best-effort: the usage payload carries no tier and omp logins store no subscription type,
+    /// so the profile endpoint is the only source for "Max 5x"-style plan names.
+    private func fetchProfilePlanName(accessToken: String) async -> String? {
+        var request = URLRequest(url: endpoint.deletingLastPathComponent().appendingPathComponent("profile"))
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return Self.parseProfilePlanName(json: json)
+    }
+
+    public static func parseProfilePlanName(json: [String: Any]) -> String? {
+        let organization = json["organization"] as? [String: Any]
+        if let tier = organization?["rate_limit_tier"] as? String,
+           let match = tier.firstMatch(of: /max_(\d+)x/) {
+            return "Max \(match.1)x"
+        }
+        switch organization?["organization_type"] as? String {
+        case "claude_max": return "Max"
+        case "claude_pro": return "Pro"
+        case "claude_team": return "Team"
+        case "claude_enterprise": return "Enterprise"
+        default: return nil
+        }
     }
 
     public static func parseCredentials(data: Data) -> ClaudeCredentials? {
@@ -82,21 +112,41 @@ public struct ClaudeProvider: CredentialUsageClient, Sendable {
             ("seven_day_sonnet", "claude_sonnet", "Sonnet · Weekly Limit"),
             ("seven_day_opus", "claude_opus", "Opus · Weekly Limit")
         ]
-        let metrics = windows.compactMap { window -> LimitMetric? in
+        var metrics = windows.compactMap { window -> LimitMetric? in
             let (key, id, label) = window
             guard let usage = json[key] as? [String: Any] else { return nil }
             return parseUsageMetric(usage, id: id, label: label)
         }
+        metrics += parseScopedWeeklyMetrics(json["limits"], excluding: metrics)
         let extraUsage = json["extra_usage"] as? [String: Any]
         let balance = numericValue(extraUsage?["balance"])
 
         return ProviderUsageSnapshot(
             provider: .claude,
-            planName: planName ?? json["plan_name"] as? String ?? "Claude Pro",
+            planName: planName ?? json["plan_name"] as? String ?? "",
             metrics: metrics,
             creditsRemaining: balance,
             isActive: !metrics.isEmpty
         )
+    }
+
+    /// Model- or surface-specific weekly caps (e.g. Fable) appear only in the `limits` array.
+    private func parseScopedWeeklyMetrics(_ value: Any?, excluding existing: [LimitMetric]) -> [LimitMetric] {
+        let coveredClasses = Set(existing.compactMap { $0.modelClass?.lowercased() })
+        let limits = value as? [[String: Any]] ?? []
+        return limits.compactMap { limit in
+            guard limit["kind"] as? String == "weekly_scoped",
+                  let scope = limit["scope"] as? [String: Any] else { return nil }
+            let scopeName = (scope["model"] as? [String: Any])?["display_name"] as? String
+                ?? (scope["surface"] as? [String: Any])?["display_name"] as? String
+            guard let scopeName, !scopeName.isEmpty,
+                  !coveredClasses.contains(scopeName.lowercased()) else { return nil }
+            var usage: [String: Any] = [:]
+            usage["utilization"] = limit["percent"]
+            usage["resets_at"] = limit["resets_at"]
+            let slug = scopeName.lowercased().replacingOccurrences(of: " ", with: "_")
+            return parseUsageMetric(usage, id: "claude_weekly_\(slug)", label: "\(scopeName) · Weekly Limit")
+        }
     }
 
     private func parseUsageMetric(
@@ -177,8 +227,8 @@ public struct ClaudeProvider: CredentialUsageClient, Sendable {
         return nil
     }
 
-    private func planName(for subscriptionType: String?) -> String {
-        guard let subscriptionType, !subscriptionType.isEmpty else { return "Claude" }
-        return "Claude \(subscriptionType.capitalized)"
+    private func planName(for subscriptionType: String?) -> String? {
+        guard let subscriptionType, !subscriptionType.isEmpty else { return nil }
+        return subscriptionType.capitalized
     }
 }

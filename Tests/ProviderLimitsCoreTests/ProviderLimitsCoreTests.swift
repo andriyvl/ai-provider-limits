@@ -353,6 +353,53 @@ struct ProviderLimitsCoreTests {
         #expect(snapshot.metrics[1].remainingPercentage == 90.0)
     }
 
+    @Test("Claude parser adds scoped weekly limits without duplicating legacy model windows")
+    func testClaudeScopedWeeklyLimits() throws {
+        let resetDate = "2026-10-21T12:59:59.705834+00:00"
+        func scoped(_ model: String, percent: Int) -> [String: Any] {
+            [
+                "kind": "weekly_scoped",
+                "percent": percent,
+                "resets_at": resetDate,
+                "scope": ["model": ["id": NSNull(), "display_name": model], "surface": NSNull()]
+            ]
+        }
+        let json: [String: Any] = [
+            "five_hour": ["utilization": 28.0, "resets_at": resetDate],
+            "seven_day": ["utilization": 16.0, "resets_at": resetDate],
+            "seven_day_opus": ["utilization": 10.0, "resets_at": resetDate],
+            "limits": [
+                ["kind": "session", "percent": 28, "resets_at": resetDate, "scope": NSNull()],
+                ["kind": "weekly_all", "percent": 16, "resets_at": resetDate, "scope": NSNull()],
+                scoped("Fable", percent: 2),
+                scoped("Opus", percent: 10)
+            ]
+        ]
+
+        let snapshot = try ClaudeProvider().parseUsagePayload(json: json)
+        #expect(snapshot.metrics.map(\.id) == ["claude_5hour", "claude_weekly", "claude_opus", "claude_weekly_fable"])
+        let fable = try #require(snapshot.metrics.last)
+        #expect(fable.modelClass == "Fable")
+        #expect(fable.remainingPercentage == 98.0)
+        #expect(fable.resetsAt != nil)
+        #expect(MetricRowView.shortWindowName(from: fable.label) == "Weekly")
+    }
+
+    @Test("Claude profile maps rate-limit tier and organization type to plan names")
+    func testClaudeProfilePlanName() {
+        func profile(type: String?, tier: String?) -> [String: Any] {
+            var organization: [String: Any] = [:]
+            organization["organization_type"] = type
+            organization["rate_limit_tier"] = tier
+            return ["organization": organization]
+        }
+        #expect(ClaudeProvider.parseProfilePlanName(json: profile(type: "claude_max", tier: "default_claude_max_5x")) == "Max 5x")
+        #expect(ClaudeProvider.parseProfilePlanName(json: profile(type: "claude_max", tier: "default_claude_max_20x")) == "Max 20x")
+        #expect(ClaudeProvider.parseProfilePlanName(json: profile(type: "claude_max", tier: nil)) == "Max")
+        #expect(ClaudeProvider.parseProfilePlanName(json: profile(type: "claude_pro", tier: "default_claude_pro")) == "Pro")
+        #expect(ClaudeProvider.parseProfilePlanName(json: profile(type: "unknown", tier: nil)) == nil)
+    }
+
     @Test("Cursor parser matches screenshot models")
     func testCursorParser() throws {
         let json = """
