@@ -418,12 +418,18 @@ enum OMPCredentialSource {
         let (declaredSeconds, jwtSeconds, isExpired, isMalformed) = evaluateExpiry(json: json, token: token, now: now)
         guard !isMalformed else { return nil }
 
+        // Anthropic access tokens last about 8 hours and omp renews them only when it calls Claude.
+        // With the stored refresh token, the provider renews in memory instead.
+        var credentials = ClaudeCredentials(accessToken: token)
+        if isExpired, let refreshToken = CredentialParsing.nonempty(json["refresh"]) {
+            credentials.renewal = ClaudeRenewal(refreshToken: refreshToken)
+        }
         return ParsedCredential(
-            payload: .claude(ClaudeCredentials(accessToken: token)),
+            payload: .claude(credentials),
             reference: accountId.map { CredentialReference(sourceID: "omp.agent-db", accountID: $0) },
             accountLabel: accountId.map { CredentialParsing.nonempty(json["email"]) ?? $0 },
             expiresAt: jwtSeconds ?? declaredSeconds,
-            isExpired: isExpired
+            isExpired: isExpired && credentials.renewal == nil
         )
     }
 

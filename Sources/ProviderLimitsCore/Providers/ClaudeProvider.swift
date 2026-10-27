@@ -3,10 +3,55 @@ import Foundation
 public struct ClaudeCredentials: Sendable {
     public let accessToken: String
     public let subscriptionType: String?
+    /// Set only when `accessToken` has expired; the provider renews it in memory before fetching.
+    var renewal: ClaudeRenewal?
 
     public init(accessToken: String, subscriptionType: String? = nil) {
         self.accessToken = accessToken
         self.subscriptionType = subscriptionType
+    }
+}
+
+/// Anthropic OAuth tokens last about 8 hours and omp renews them only when it calls Claude.
+/// With the stored refresh token, the provider renews in memory instead.
+struct ClaudeRenewal: Sendable {
+    let refreshToken: String
+}
+
+/// Renewed Claude access tokens, kept in memory only. Never written back to the owning tool's store.
+private actor ClaudeTokenRenewer {
+    static let shared = ClaudeTokenRenewer()
+
+    /// Claude Code's public OAuth client id.
+    private static let clientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    private static let tokenEndpoint = URL(string: "https://platform.claude.com/v1/oauth/token")!
+
+    private var renewedTokens: [String: (accessToken: String, expiresAt: Date)] = [:]
+
+    func accessToken(for renewal: ClaudeRenewal, session: URLSession) async throws -> String {
+        if let cached = renewedTokens[renewal.refreshToken], cached.expiresAt > Date() {
+            return cached.accessToken
+        }
+        var request = URLRequest(url: Self.tokenEndpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let body: [String: String] = [
+            "grant_type": "refresh_token",
+            "refresh_token": renewal.refreshToken,
+            "client_id": Self.clientID
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accessToken = CredentialParsing.nonempty(json["access_token"]) else {
+            throw ProviderClientError.invalidResponse(.claude, "Token renewal failed")
+        }
+        let lifetime = CredentialParsing.number(json["expires_in"]) ?? 28_800
+        renewedTokens[renewal.refreshToken] = (accessToken, Date().addingTimeInterval(lifetime - 300))
+        return accessToken
     }
 }
 
@@ -37,9 +82,14 @@ public struct ClaudeProvider: CredentialUsageClient, Sendable {
             throw ProviderClientError.missingCredentials(.claude)
         }
 
+        var accessToken = credentials.accessToken
+        if let renewal = credentials.renewal {
+            accessToken = try await ClaudeTokenRenewer.shared.accessToken(for: renewal, session: session)
+        }
+
         var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
-        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
@@ -58,7 +108,7 @@ public struct ClaudeProvider: CredentialUsageClient, Sendable {
         }
 
         let usageJSON = (json["usage"] as? [String: Any]) ?? json
-        let resolvedPlanName = await fetchProfilePlanName(accessToken: credentials.accessToken)
+        let resolvedPlanName = await fetchProfilePlanName(accessToken: accessToken)
             ?? planName(for: credentials.subscriptionType)
         let snapshot = try parseUsagePayload(json: usageJSON, planName: resolvedPlanName)
         guard !snapshot.metrics.isEmpty || snapshot.creditsRemaining != nil else {
