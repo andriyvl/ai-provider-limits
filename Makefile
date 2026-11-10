@@ -1,4 +1,4 @@
-.PHONY: all build test preview run clean project build-macos
+.PHONY: all build test preview run install clean project build-macos
 
 all: build
 
@@ -20,6 +20,14 @@ preview:
 
 run: build
 	@open "dist/AI Limits.app"
+
+# Copies the app into /Applications so Launchpad and Spotlight list it, then relaunches it from there.
+install: build
+	@pkill -x "AI Limits" || true
+	@rm -rf "/Applications/AI Limits.app"
+	@ditto "dist/AI Limits.app" "/Applications/AI Limits.app"
+	@open "/Applications/AI Limits.app"
+	@echo "Installed: /Applications/AI Limits.app"
 
 clean:
 	@rm -rf .build dist ProviderLimits.xcodeproj

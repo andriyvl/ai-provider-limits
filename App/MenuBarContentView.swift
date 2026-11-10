@@ -46,7 +46,6 @@ public struct MenuBarContentView: View {
         }
         .frame(width: 360, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
-        .background(LiquidGlassTheme.panelBackground)
         .preferredColorScheme(.dark)
         .background(MenuBarWindowChrome())
     }
@@ -177,17 +176,16 @@ private struct MenuBarWindowChrome: NSViewRepresentable {
         }
     }
 
-    private static let panelColor = NSColor(calibratedRed: 0.12, green: 0.13, blue: 0.15, alpha: 1)
-
     private static func applyChrome(on window: NSWindow?) {
         guard let window else { return }
 
-        window.isOpaque = true
+        // Clear so the popover's translucent material shows through, matching its arrow.
+        window.isOpaque = false
         window.hasShadow = true
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
-        window.backgroundColor = panelColor
+        window.backgroundColor = .clear
         window.appearance = NSAppearance(named: .darkAqua)
 
         guard let content = window.contentView else { return }
