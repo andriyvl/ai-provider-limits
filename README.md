@@ -36,7 +36,7 @@ AI Limits runs 100% locally on your workstation. It does not use intermediate pr
 |---|---|---|---|
 | **Google Antigravity** | Antigravity IDE login (`~/Library/Application Support/Antigravity IDE/User/globalStorage/state.vscdb`) or `~/.omp/agent/agent.db` (`google-antigravity`); expired omp tokens are renewed in memory, never written back | `POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` | Gemini 5-hour rolling session & weekly quota, Claude & GPT 5-hour & weekly limits, remaining percentages, reset timestamps, and model credit overage toggles. |
 | **OpenAI Codex** | `~/.codex/auth.json` or `~/.omp/agent/agent.db` (`openai-codex`), prioritised by latest unexpired JWT token | `GET https://chatgpt.com/backend-api/wham/usage` (passing `ChatGPT-Account-Id` when present) | Plan type (`ChatGPT Plus`, `ChatGPT Pro`, `Team`, `Enterprise`), primary 5-hour window, secondary weekly quota, reset timestamps, and remaining credits count. |
-| **Anthropic Claude** | `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`) or `~/.omp/agent/agent.db` (`anthropic`) | `GET https://api.anthropic.com/api/oauth/usage` | `five_hour` session window, `seven_day` weekly window, `seven_day_sonnet` and `seven_day_opus` caps, reset timestamps/durations, and `extra_usage.balance`. |
+| **Anthropic Claude** | `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`), the Claude Code Keychain item `Claude Code-credentials` (used by Claude Code and T3 Code on macOS), or `~/.omp/agent/agent.db` (`anthropic`) | `GET https://api.anthropic.com/api/oauth/usage` | `five_hour` session window, `seven_day` weekly window, `seven_day_sonnet` and `seven_day_opus` caps, reset timestamps/durations, and `extra_usage.balance`. |
 | **Cursor** | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` (`ItemTable`) or `~/.omp/agent/agent.db` | `GET https://cursor.com/api/usage-summary`<br>`POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetCreditGrantsBalance`<br>`POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus` | Cursor Models allowance, Other Models allowance, Grok Bot weekly allowance & reset timestamp (`nextResetTimestampUtc`), on-demand spend, and billing cycle end date (`billingCycleEnd`). |
 | **OpenRouter** | `OPENROUTER_API_KEY` process environment or newest active `openrouter` entry in `~/.omp/agent/agent.db` | `GET https://openrouter.ai/api/v1/credits`<br>`GET https://openrouter.ai/api/v1/key` | Net available USD account balance (`total_credits - total_usage`), active API key spend limit & remaining balance, limit reset period, and UTC daily spend (`usage_daily`). |
 
@@ -78,6 +78,14 @@ make build
 ```
 
 The self-contained app bundle will be placed in `dist/AI Limits.app`.
+
+### Install to Applications
+
+```bash
+make install
+```
+
+Copies the app to `/Applications` so Launchpad and Spotlight list it, then relaunches it from there.
 
 ### Terminal Preview
 

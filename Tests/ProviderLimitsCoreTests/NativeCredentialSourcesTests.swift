@@ -8,6 +8,48 @@ import Testing
 struct NativeCredentialSourcesTests {
     private let fixedClockDate = Date(timeIntervalSince1970: 1791316800)
 
+    @Test("Claude Code Keychain login is preferred and identified by its account email")
+    func claudeCodeKeychainPreferred() async throws {
+        try await withTemporaryHome { home in
+            try #"{"oauthAccount":{"emailAddress":"person@example.com"}}"#
+                .write(to: home.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+            let expiryMillis = (fixedClockDate.timeIntervalSince1970 + 3600) * 1000
+            let item = #"{"claudeAiOauth":{"accessToken":"synthetic-claude-code","refreshToken":"synthetic-refresh","expiresAt":\#(expiryMillis),"subscriptionType":"max"}}"#
+            let resolver = CredentialResolver(
+                home: home, environment: [:], clock: { self.fixedClockDate },
+                readKeychainItem: { $0 == "Claude Code-credentials" ? Data(item.utf8) : nil }
+            )
+
+            let resolution = await resolver.resolve(provider: .claude)
+            let keychainSource = try #require(resolution.discovery.sources.first { $0.id == "native.claude-keychain" })
+            #expect(keychainSource.status == .availableLocally)
+            let candidate = try #require(resolution.candidates.first)
+            #expect(candidate.sourceID == "native.claude-keychain")
+            #expect(candidate.reference?.accountID == "person@example.com")
+            guard case let .claude(credentials) = candidate.payload else {
+                Issue.record("Expected claude payload")
+                return
+            }
+            #expect(credentials.accessToken == "synthetic-claude-code")
+        }
+    }
+
+    @Test("Expired Claude Code Keychain login yields no candidate")
+    func claudeCodeKeychainExpired() async throws {
+        try await withTemporaryHome { home in
+            let expiryMillis = (fixedClockDate.timeIntervalSince1970 - 60) * 1000
+            let item = #"{"claudeAiOauth":{"accessToken":"synthetic-claude-code","refreshToken":"synthetic-refresh","expiresAt":\#(expiryMillis)}}"#
+            let resolver = CredentialResolver(
+                home: home, environment: [:], clock: { self.fixedClockDate },
+                readKeychainItem: { _ in Data(item.utf8) }
+            )
+
+            let resolution = await resolver.resolve(provider: .claude)
+            #expect(resolution.discovery.sources.first { $0.id == "native.claude-keychain" }?.status == .expired)
+            #expect(!resolution.candidates.contains { $0.sourceID == "native.claude-keychain" })
+        }
+    }
+
     @Test("Native Antigravity IDE discovers valid credentials with unknown identity")
     func nativeAntigravityValidCredentials() async throws {
         try await withTemporaryHome { home in

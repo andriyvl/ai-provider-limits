@@ -80,15 +80,27 @@ public struct CredentialResolver: Sendable {
     private let clock: @Sendable () -> Date
     private let access: @Sendable (URL) -> Bool
     private let readFile: @Sendable (URL) throws -> Data
+    private let readKeychainItem: @Sendable (String) -> Data?
 
     public init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         clock: @escaping @Sendable () -> Date = { Date() },
         access: @escaping @Sendable (URL) -> Bool = { _ in true },
-        readFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) }
+        readFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) },
+        readKeychainItem: (@Sendable (String) -> Data?)? = nil
     ) {
         self.home = home
+        // The Keychain belongs to the real user, so a resolver pointed at another home (tests, fixtures)
+        // never sees it unless a reader is passed in.
+        let isRealHome = home.standardizedFileURL == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        if let readKeychainItem {
+            self.readKeychainItem = readKeychainItem
+        } else if isRealHome {
+            self.readKeychainItem = { ClaudeCodeKeychain.readItem(service: $0) }
+        } else {
+            self.readKeychainItem = { _ in nil }
+        }
         self.environment = environment
         self.clock = clock
         self.access = access
@@ -149,6 +161,7 @@ public struct CredentialResolver: Sendable {
         case .claude:
             return [
                 readNativeJSON(provider: provider, now: now),
+                readClaudeCodeKeychain(now: now),
                 PiCredentialSource.read(provider: provider, home: home, environment: environment, now: now, access: access, readFile: readFile),
                 OMPCredentialSource.read(provider: provider, home: home, now: now, access: access)
             ]
@@ -229,6 +242,45 @@ public struct CredentialResolver: Sendable {
             sourceID: sourceID, label: label, location: "~/" + relativePath,
             payload: payload, accountID: accountID, expiresAt: expiresAt, now: now
         )
+    }
+
+    /// Claude Code on macOS (and T3 Code, which runs it) keeps its login in the Keychain, not in
+    /// `~/.claude/.credentials.json`. Claude Code refreshes this token itself; the app never renews it,
+    /// because spending the refresh token here could invalidate Claude Code's stored copy and sign it out.
+    private func readClaudeCodeKeychain(now: Date) -> CredentialSourceRead {
+        let sourceID = "native.claude-keychain"
+        let label = "Claude Code"
+        let location = "Keychain · \(ClaudeCodeKeychain.service)"
+        func result(_ status: CredentialSourceStatus) -> CredentialSourceRead {
+            CredentialSourceRead(
+                descriptor: CredentialSourceDescriptor(
+                    id: sourceID, label: label, location: location, status: status, accounts: []
+                ), candidates: []
+            )
+        }
+        guard let data = readKeychainItem(ClaudeCodeKeychain.service) else { return result(.missing) }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oauth = json["claudeAiOauth"] as? [String: Any],
+              let token = CredentialParsing.nonempty(oauth["accessToken"]),
+              let expiry = CredentialParsing.number(oauth["expiresAt"]) else {
+            return result(.unsupportedFormat)
+        }
+        let credentials = ClaudeCredentials(
+            accessToken: token, subscriptionType: CredentialParsing.nonempty(oauth["subscriptionType"])
+        )
+        return singleCredential(
+            sourceID: sourceID, label: label, location: location, payload: .claude(credentials),
+            accountID: claudeCodeAccountEmail(), expiresAt: expiry / 1000, now: now
+        )
+    }
+
+    /// The Keychain item carries no account identity; Claude Code records the signed-in email here.
+    private func claudeCodeAccountEmail() -> String? {
+        let url = home.appendingPathComponent(".claude.json")
+        guard access(url), let data = try? readFile(url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let account = json["oauthAccount"] as? [String: Any] else { return nil }
+        return CredentialParsing.nonempty(account["emailAddress"])
     }
 
     private func readCursor(now: Date) -> CredentialSourceRead {
